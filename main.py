@@ -408,11 +408,23 @@ def main():
             scored_df["ml_predicted_channel"] = scored_df.index.map(
                 ml_preds
             ).fillna("")
-            # Agreement column: do both models agree?
             scored_df["models_agree"] = (
                 scored_df["predicted_channel"] == scored_df["ml_predicted_channel"]
             ).map({True: "Yes", False: "No"})
             scored_df.loc[scored_df["ml_predicted_channel"] == "", "models_agree"] = ""
+
+        # Show actual vs predicted distribution
+        print("\n  Input (actual) distribution:")
+        print(scored_df["actual_channel"].value_counts().to_string())
+        print("\n  Predicted distribution:")
+        print(scored_df["predicted_channel"].value_counts().to_string())
+        print("\n  Correctly classified:")
+        correct = scored_df["predicted_channel"] == scored_df["actual_channel"]
+        for ch in sorted(scored_df["actual_channel"].unique()):
+            mask = scored_df["actual_channel"] == ch
+            ch_correct = correct[mask].sum()
+            ch_total = mask.sum()
+            print(f"    {ch}: {ch_correct}/{ch_total} ({ch_correct/ch_total:.0%})")
 
         generate_output_excel(scored_df, rules, RESULTS_EXCEL, extra_sheets=extra_sheets)
     else:

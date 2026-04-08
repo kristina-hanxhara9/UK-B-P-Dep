@@ -260,7 +260,7 @@ def _build_combined_summary(rules: dict) -> pd.DataFrame:
             if not sic_row.empty:
                 r = sic_row.iloc[0]
                 rec["sic_code"] = r["sic_code"]
-                rec["sic_weight"] = r["weight"]
+                rec["sic_prevalence"] = r["prevalence"]
                 rec["sic_description"] = r["description"]
             else:
                 rec["sic_code"] = ""
