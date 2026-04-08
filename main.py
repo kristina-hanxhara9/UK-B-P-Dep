@@ -30,6 +30,7 @@ from src.analysis import (
 )
 from src.name_features import discover_keywords, generate_keyword_report
 from src.rule_model import build_rules, evaluate_rule_model
+from src.scorer import score_all_companies, generate_confidence_report
 from src.ml_model import prepare_features, train_and_evaluate
 
 
@@ -117,6 +118,17 @@ def step_4_rule_model(
     return rules, results
 
 
+def step_4b_confidence_scoring(df: pd.DataFrame, rules: dict):
+    """Step 4b: Score every company with confidence levels + evidence."""
+    print("\n" + "=" * 60)
+    print("STEP 4b — Confidence-Scored Predictions")
+    print("=" * 60)
+
+    scored_df = score_all_companies(df, rules)
+    generate_confidence_report(scored_df, config.OUTPUT_DIR)
+    return scored_df
+
+
 def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
     """Step 5: Train and evaluate the ML model (active companies only)."""
     print("\n" + "=" * 60)
@@ -192,8 +204,11 @@ def main():
         keyword_data = step_3_analysis(df, matrix)
 
     # Step 4: rule model uses SIC weights + discovered keywords
+    rules = None
     if args.step in ("all", "4"):
-        step_4_rule_model(df, matrix, keyword_data=keyword_data)
+        rules, _ = step_4_rule_model(df, matrix, keyword_data=keyword_data)
+        # 4b: confidence-scored predictions with full company details
+        step_4b_confidence_scoring(df, rules)
 
     # Step 5: ML model uses SIC features + discovered keyword features
     if args.step in ("all", "5"):

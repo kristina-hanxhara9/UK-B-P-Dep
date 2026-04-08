@@ -134,12 +134,31 @@ class CompaniesHouseClient:
             print(f"  [ERROR] Profile failed for '{company_name}' ({company_number}): {exc}")
             return None
 
+        # Extract registered office address
+        addr = profile.get("registered_office_address", {})
+        address_parts = [
+            addr.get("address_line_1", ""),
+            addr.get("address_line_2", ""),
+            addr.get("locality", ""),
+            addr.get("region", ""),
+        ]
+        full_address = ", ".join(p for p in address_parts if p)
+
         data = {
             "input_name": company_name,
             "matched_name": profile.get("company_name", best.get("title", "")),
             "company_number": company_number,
             "sic_codes": profile.get("sic_codes", []),
             "company_status": profile.get("company_status", "unknown"),
+            "company_type": profile.get("type", ""),
+            "date_of_creation": profile.get("date_of_creation", ""),
+            "address_line_1": addr.get("address_line_1", ""),
+            "address_line_2": addr.get("address_line_2", ""),
+            "locality": addr.get("locality", ""),
+            "region": addr.get("region", ""),
+            "postcode": addr.get("postal_code", ""),
+            "country": addr.get("country", ""),
+            "full_address": full_address,
         }
 
         self._save_cache(company_name, data)
@@ -175,6 +194,15 @@ def fetch_all_companies(
                     "company_number": None,
                     "sic_codes": "[]",
                     "company_status": "not_found",
+                    "company_type": "",
+                    "date_of_creation": "",
+                    "address_line_1": "",
+                    "address_line_2": "",
+                    "locality": "",
+                    "region": "",
+                    "postcode": "",
+                    "country": "",
+                    "full_address": "",
                     "channel": channel,
                 })
             else:
