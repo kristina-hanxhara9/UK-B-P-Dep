@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UK Merchants Channel Classifier — main pipeline.
+"""UK Merchants Channel Classifier - main pipeline.
 
 Usage
 -----
@@ -28,25 +28,23 @@ import config
 from src.excel_reader import read_companies
 from src.companies_house import CompaniesHouseClient, fetch_all_companies
 from src.sic_mapping import build_sic_channel_matrix, print_distribution
-from src.analysis import (
-    compute_channel_sic_sets,
-    generate_analysis_report,
-    plot_sic_heatmap,
-)
-from src.name_features import discover_keywords, generate_keyword_report
+from src.analysis import compute_channel_sic_sets, overlap_analysis, unique_sic_codes, shared_sic_codes
+from src.name_features import discover_keywords
 from src.rule_model import build_rules, evaluate_rule_model
-from src.scorer import score_all_companies, generate_confidence_report
+from src.scorer import score_all_companies, generate_output_excel
 from src.ml_model import prepare_features, train_and_evaluate
+from src.sic_mapping import SIC_DESCRIPTIONS
 
 
 COMPANY_DATA_CSV = config.PROCESSED_DIR / "company_data.csv"
 SIC_MATRIX_CSV = config.PROCESSED_DIR / "sic_channel_matrix.csv"
+RESULTS_EXCEL = config.OUTPUT_DIR / "results.xlsx"
 
 
 def step_1_fetch(excel_path: Path) -> pd.DataFrame:
     """Step 1: Read Excel and fetch data from Companies House."""
     print("\n" + "=" * 60)
-    print("STEP 1 — Read Excel & Fetch Companies House Data")
+    print("STEP 1 - Read Excel & Fetch Companies House Data")
     print("=" * 60)
 
     if not config.API_KEY:
@@ -64,7 +62,6 @@ def step_1_fetch(excel_path: Path) -> pd.DataFrame:
     client = CompaniesHouseClient(config.API_KEY, config.RAW_CACHE_DIR)
     df = fetch_all_companies(client, companies, COMPANY_DATA_CSV)
 
-    # Summary
     print(f"\n  Status breakdown:")
     print(df["company_status"].value_counts().to_string())
     matched = df["company_number"].notna().sum()
@@ -74,70 +71,52 @@ def step_1_fetch(excel_path: Path) -> pd.DataFrame:
 
 
 def step_2_sic_mapping(df: pd.DataFrame) -> pd.DataFrame:
-    """Step 2: Build SIC code × channel matrix."""
+    """Step 2: Build SIC code x channel matrix."""
     print("\n" + "=" * 60)
-    print("STEP 2 — SIC Code to Channel Mapping")
+    print("STEP 2 - SIC Code to Channel Mapping")
     print("=" * 60)
 
     matrix = build_sic_channel_matrix(df, SIC_MATRIX_CSV)
-    print_distribution(matrix, config.OUTPUT_DIR / "sic_distribution.txt")
+    print_distribution(matrix)
     return matrix
 
 
 def step_3_analysis(df: pd.DataFrame, matrix: pd.DataFrame) -> dict:
     """Step 3: Analyse SIC codes AND company name keywords."""
     print("\n" + "=" * 60)
-    print("STEP 3a — SIC Code Analysis")
+    print("STEP 3 - SIC Code & Keyword Analysis")
     print("=" * 60)
 
     sic_sets = compute_channel_sic_sets(matrix)
-    generate_analysis_report(matrix, sic_sets, config.OUTPUT_DIR / "analysis_report.txt")
-
-    try:
-        plot_sic_heatmap(matrix, config.OUTPUT_DIR / "sic_heatmap.png")
-    except Exception as exc:
-        print(f"  [WARN] Could not generate heatmap: {exc}")
-
-    print("\n" + "=" * 60)
-    print("STEP 3b — Company Name Keyword Analysis")
-    print("=" * 60)
-
     keyword_data = discover_keywords(df)
-    generate_keyword_report(keyword_data, config.OUTPUT_DIR / "keyword_analysis.txt")
+
+    print(f"  SIC codes per channel:")
+    for ch, codes in sic_sets.items():
+        print(f"    {ch}: {len(codes)} distinct codes")
+
+    print(f"\n  Discovered keywords per channel:")
+    for ch, scored in keyword_data.get("keyword_scores", {}).items():
+        top_words = [w for w, _ in scored[:5]]
+        print(f"    {ch}: {', '.join(top_words)}")
 
     return keyword_data
 
 
-def step_4_rule_model(
-    df: pd.DataFrame,
-    matrix: pd.DataFrame,
-    keyword_data: dict | None = None,
-):
+def step_4_rule_model(df: pd.DataFrame, matrix: pd.DataFrame, keyword_data: dict | None = None):
     """Step 4: Build and evaluate the rule-based model."""
     print("\n" + "=" * 60)
-    print("STEP 4 — Rule-Based Model")
+    print("STEP 4 - Rule-Based Model")
     print("=" * 60)
 
     rules = build_rules(matrix, keyword_data=keyword_data)
-    results = evaluate_rule_model(df, rules, config.OUTPUT_DIR / "rule_model_results.txt")
+    results = evaluate_rule_model(df, rules)
     return rules, results
-
-
-def step_4b_confidence_scoring(df: pd.DataFrame, rules: dict):
-    """Step 4b: Score every company with confidence levels + evidence."""
-    print("\n" + "=" * 60)
-    print("STEP 4b — Confidence-Scored Predictions + Excel Output")
-    print("=" * 60)
-
-    scored_df = score_all_companies(df, rules)
-    generate_confidence_report(scored_df, rules, config.OUTPUT_DIR)
-    return scored_df
 
 
 def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
     """Step 5: Train and evaluate the ML model (active companies only)."""
     print("\n" + "=" * 60)
-    print("STEP 5 — Machine Learning Model")
+    print("STEP 5 - Machine Learning Model")
     print("=" * 60)
 
     discovered_kws = keyword_data.get("all_keywords") if keyword_data else None
@@ -149,6 +128,138 @@ def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
     except ValueError as exc:
         print(f"  [ERROR] Cannot train ML model: {exc}")
         return None
+
+
+# ------------------------------------------------------------------
+# Build the single output Excel with all results
+# ------------------------------------------------------------------
+
+def build_analysis_sheets(matrix: pd.DataFrame, keyword_data: dict) -> dict[str, pd.DataFrame]:
+    """Build DataFrames for analysis sheets."""
+    sheets = {}
+
+    # SIC Distribution sheet
+    numeric = matrix.drop(columns=["description"], errors="ignore")
+    sic_dist = numeric.copy()
+    sic_dist.insert(0, "description", sic_dist.index.map(
+        lambda c: SIC_DESCRIPTIONS.get(str(c), "")
+    ))
+    sic_dist["total"] = numeric.sum(axis=1)
+    sic_dist = sic_dist.sort_values("total", ascending=False)
+    sic_dist.index.name = "sic_code"
+    sheets["SIC Distribution"] = sic_dist.reset_index()
+
+    # SIC Overlap Analysis
+    sic_sets = compute_channel_sic_sets(matrix)
+    overlaps = overlap_analysis(sic_sets)
+    uniques = unique_sic_codes(sic_sets)
+    common = shared_sic_codes(sic_sets)
+
+    overlap_rows = []
+    for ch, codes in uniques.items():
+        for c in sorted(codes):
+            overlap_rows.append({
+                "type": f"Unique to {ch}",
+                "sic_code": c,
+                "description": SIC_DESCRIPTIONS.get(c, ""),
+            })
+    for c in sorted(common):
+        overlap_rows.append({
+            "type": "Shared (all channels)",
+            "sic_code": c,
+            "description": SIC_DESCRIPTIONS.get(c, ""),
+        })
+    for key, val in overlaps.items():
+        if key == "all_channels":
+            continue
+        for c in val["codes"]:
+            overlap_rows.append({
+                "type": f"Overlap: {key}",
+                "sic_code": c,
+                "description": SIC_DESCRIPTIONS.get(c, ""),
+            })
+    sheets["SIC Overlap Analysis"] = pd.DataFrame(overlap_rows)
+
+    # Keyword Analysis
+    kw_rows = []
+    for ch, scored in keyword_data.get("keyword_scores", {}).items():
+        for rank, (word, score) in enumerate(scored, 1):
+            kw_rows.append({
+                "channel": ch,
+                "rank": rank,
+                "keyword": word,
+                "chi2_score": round(score, 2),
+            })
+    sheets["Keyword Analysis"] = pd.DataFrame(kw_rows)
+
+    return sheets
+
+
+def build_model_sheets(rule_results: dict, ml_results: dict | None) -> dict[str, pd.DataFrame]:
+    """Build DataFrames for model evaluation sheets."""
+    sheets = {}
+
+    # Rule model results
+    if rule_results:
+        rule_rows = []
+        report_lines = rule_results.get("classification_report", "").strip().split("\n")
+        for line in report_lines:
+            line = line.strip()
+            if line and not line.startswith("accuracy") and not line.startswith("macro") and not line.startswith("weighted"):
+                parts = line.split()
+                if len(parts) >= 5:
+                    # Channel name might be multiple words
+                    # Find numeric values from the end
+                    nums = []
+                    words = []
+                    for p in reversed(parts):
+                        try:
+                            nums.insert(0, float(p))
+                        except ValueError:
+                            words.insert(0, p)
+                    if len(nums) >= 4:
+                        rule_rows.append({
+                            "channel": " ".join(words),
+                            "precision": nums[0],
+                            "recall": nums[1],
+                            "f1_score": nums[2],
+                            "support": int(nums[3]),
+                        })
+
+            if line.startswith("accuracy"):
+                parts = line.split()
+                try:
+                    acc = float(parts[1])
+                    rule_rows.append({
+                        "channel": "OVERALL ACCURACY",
+                        "precision": acc,
+                        "recall": acc,
+                        "f1_score": acc,
+                        "support": int(parts[2]) if len(parts) > 2 else "",
+                    })
+                except (ValueError, IndexError):
+                    pass
+
+        if rule_rows:
+            sheets["Rule Model Results"] = pd.DataFrame(rule_rows)
+
+    # ML model results
+    if ml_results:
+        ml_rows = []
+        cv = ml_results.get("cv_results", {})
+        for metric in ["accuracy", "f1_macro", "precision_macro", "recall_macro"]:
+            key = f"test_{metric}"
+            if key in cv:
+                vals = cv[key]
+                ml_rows.append({
+                    "metric": metric,
+                    "mean": round(vals.mean(), 3),
+                    "std": round(vals.std(), 3),
+                })
+        if ml_rows:
+            sheets["ML Model Results"] = pd.DataFrame(ml_rows)
+
+    return sheets
 
 
 # ------------------------------------------------------------------
@@ -194,7 +305,7 @@ def main():
         sys.exit(1)
 
     # ----------------------------------------------------------
-    # Steps 2–5
+    # Steps 2-5
     # ----------------------------------------------------------
     if args.step in ("all", "2"):
         matrix = step_2_sic_mapping(df)
@@ -203,24 +314,50 @@ def main():
     else:
         matrix = step_2_sic_mapping(df)
 
-    # Step 3: analyse both SIC codes and name keywords
     keyword_data = None
     if args.step in ("all", "3"):
         keyword_data = step_3_analysis(df, matrix)
 
-    # Step 4: rule model uses SIC weights + discovered keywords
     rules = None
+    rule_results = None
     if args.step in ("all", "4"):
-        rules, _ = step_4_rule_model(df, matrix, keyword_data=keyword_data)
-        # 4b: confidence-scored predictions with full company details
-        step_4b_confidence_scoring(df, rules)
+        rules, rule_results = step_4_rule_model(df, matrix, keyword_data=keyword_data)
 
-    # Step 5: ML model uses SIC features + discovered keyword features
+    ml_results = None
     if args.step in ("all", "5"):
-        step_5_ml_model(df, keyword_data=keyword_data)
+        ml_results = step_5_ml_model(df, keyword_data=keyword_data)
+
+    # ----------------------------------------------------------
+    # Build single output Excel with ALL results
+    # ----------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("GENERATING OUTPUT EXCEL")
+    print("=" * 60)
+
+    extra_sheets = {}
+
+    # Analysis sheets
+    if keyword_data:
+        extra_sheets.update(build_analysis_sheets(matrix, keyword_data))
+
+    # Model evaluation sheets
+    if rule_results or ml_results:
+        extra_sheets.update(build_model_sheets(rule_results or {}, ml_results))
+
+    # Scored predictions + everything into one Excel
+    if rules:
+        scored_df = score_all_companies(df, rules)
+        generate_output_excel(scored_df, rules, RESULTS_EXCEL, extra_sheets=extra_sheets)
+    else:
+        # No rules built yet - just output raw data
+        with pd.ExcelWriter(RESULTS_EXCEL, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="All Companies", index=False)
+            for name, sheet_df in extra_sheets.items():
+                sheet_df.to_excel(writer, sheet_name=name[:31], index=False)
+        print(f"  Saved output -> {RESULTS_EXCEL}")
 
     print("\n" + "=" * 60)
-    print("DONE — Check data/output/ for all results")
+    print(f"DONE - All results in: {RESULTS_EXCEL}")
     print("=" * 60)
 
 

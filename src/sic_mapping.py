@@ -68,7 +68,7 @@ SIC_DESCRIPTIONS: dict[str, str] = {
 
 
 def build_sic_channel_matrix(df: pd.DataFrame, output_path: Path) -> pd.DataFrame:
-    """Create a SIC-code × channel frequency matrix.
+    """Create a SIC-code xchannel frequency matrix.
 
     Parameters
     ----------
@@ -98,11 +98,11 @@ def build_sic_channel_matrix(df: pd.DataFrame, output_path: Path) -> pd.DataFram
     ))
 
     matrix.to_csv(output_path)
-    print(f"  Saved SIC × channel matrix → {output_path}")
+    print(f"  Saved SIC xchannel matrix ->{output_path}")
     return matrix
 
 
-def print_distribution(matrix: pd.DataFrame, output_path: Path | None = None):
+def print_distribution(matrix: pd.DataFrame):
     """Pretty-print (and optionally save) the SIC distribution per channel."""
     lines: list[str] = []
     lines.append("=" * 80)
@@ -120,11 +120,4 @@ def print_distribution(matrix: pd.DataFrame, output_path: Path | None = None):
             desc = SIC_DESCRIPTIONS.get(str(sic), "")
             lines.append(f"  {sic}  ({int(count):>3})  {desc}")
 
-    report = "\n".join(lines)
-    print(report)
-
-    if output_path:
-        output_path.write_text(report)
-        print(f"  Saved distribution report → {output_path}")
-
-    return report
+    print("\n".join(lines))

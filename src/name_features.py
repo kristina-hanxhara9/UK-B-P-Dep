@@ -1,6 +1,6 @@
 """Extract and analyse company name keywords from the data itself.
 
-Keywords are NOT hardcoded — they are discovered by analysing which words
+Keywords are NOT hardcoded -they are discovered by analysing which words
 appear frequently in each channel's company names and are statistically
 discriminative (using chi-squared scores).
 """
@@ -58,7 +58,7 @@ def discover_keywords(
 
     channel_word_counts = {ch: Counter(toks) for ch, toks in channel_tokens.items()}
 
-    # Build a word × channel count matrix for chi-squared scoring
+    # Build a word x channel count matrix for chi-squared scoring
     all_words = set()
     for counts in channel_word_counts.values():
         all_words |= {w for w, c in counts.items() if c >= min_occurrences}
@@ -194,7 +194,7 @@ def generate_keyword_report(
     lines.append(f"\n  Total keywords selected: {len(keyword_data['all_keywords'])}")
 
     report = "\n".join(lines)
-    output_path.write_text(report)
+    output_path.write_text(report, encoding="utf-8")
     print(report)
-    print(f"\n  Saved keyword report → {output_path}")
+    print(f"\n  Saved keyword report ->{output_path}")
     return report

@@ -54,7 +54,7 @@ def prepare_features(
     print(f"  Active companies: {len(active)} / {len(df)} total")
 
     if active.empty:
-        print("  [WARN] No active companies found — using all companies instead.")
+        print("  [WARN] No active companies found -using all companies instead.")
         active = df.copy()
 
     # Parse SIC codes
@@ -131,7 +131,7 @@ def train_and_evaluate(
     lines.append(f"\nStratified {cv.get_n_splits()}-Fold Cross-Validation:")
     for metric in scoring:
         vals = cv_results[f"test_{metric}"]
-        lines.append(f"  {metric:>20s}: {vals.mean():.3f} ± {vals.std():.3f}")
+        lines.append(f"  {metric:>20s}: {vals.mean():.3f} +/-{vals.std():.3f}")
 
     # --- Train on full data for final model + confusion matrix ---
     clf.fit(X, y)
@@ -143,7 +143,7 @@ def train_and_evaluate(
     lines.append(f"\nFull-data classification report (train set):\n{report}")
     lines.append(f"Confusion matrix (train set):\n{cm}")
 
-    # Feature importance — top SIC codes
+    # Feature importance -top SIC codes
     importances = pd.Series(clf.feature_importances_, index=X.columns)
     top_features = importances.sort_values(ascending=False).head(15)
     lines.append("\nTop 15 most important SIC codes:")
@@ -155,8 +155,8 @@ def train_and_evaluate(
 
     # --- Save outputs ---
     report_path = output_dir / "ml_model_results.txt"
-    report_path.write_text(result_text)
-    print(f"\n  Saved ML report → {report_path}")
+    report_path.write_text(result_text, encoding="utf-8")
+    print(f"\n  Saved ML report ->{report_path}")
 
     # Confusion matrix heatmap
     _plot_confusion_matrix(cm, labels, output_dir / "confusion_matrix.png")
@@ -167,7 +167,7 @@ def train_and_evaluate(
     # Save model
     model_path = output_dir / "model.pkl"
     joblib.dump({"model": clf, "binarizer": mlb, "labels": labels}, model_path)
-    print(f"  Saved model → {model_path}")
+    print(f"  Saved model ->{model_path}")
 
     return {
         "cv_results": cv_results,
@@ -195,11 +195,11 @@ def _plot_confusion_matrix(cm: np.ndarray, labels: list[str], output_path: Path)
     )
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Actual")
-    ax.set_title("Confusion Matrix — ML Model")
+    ax.set_title("Confusion Matrix -ML Model")
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-    print(f"  Saved confusion matrix → {output_path}")
+    print(f"  Saved confusion matrix ->{output_path}")
 
 
 def _plot_feature_importance(top_features: pd.Series, output_path: Path):
@@ -210,4 +210,4 @@ def _plot_feature_importance(top_features: pd.Series, output_path: Path):
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-    print(f"  Saved feature importance chart → {output_path}")
+    print(f"  Saved feature importance chart ->{output_path}")

@@ -35,7 +35,7 @@ def read_companies(
 
         df = pd.read_excel(xls, sheet_name=sheet_name)
         if df.empty or df.shape[1] == 0:
-            print(f"  [WARN] Sheet '{sheet_name}' is empty — skipping.")
+            print(f"  [WARN] Sheet '{sheet_name}' is empty -skipping.")
             continue
 
         # Take the first column as company names
@@ -48,6 +48,6 @@ def read_companies(
         names = names[names != ""].tolist()
 
         companies_by_channel[channel] = names
-        print(f"  Sheet '{sheet_name}' → channel '{channel}': {len(names)} companies")
+        print(f"  Sheet '{sheet_name}' ->channel '{channel}': {len(names)} companies")
 
     return companies_by_channel

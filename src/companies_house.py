@@ -26,7 +26,7 @@ class CompaniesHouseClient:
         self.session.auth = (api_key, "")
         self.session.headers.update({"Accept": "application/json"})
 
-        # Rate limiter — track timestamps of recent calls
+        # Rate limiter -track timestamps of recent calls
         self._call_times: deque[float] = deque()
 
     # ------------------------------------------------------------------
@@ -43,7 +43,7 @@ class CompaniesHouseClient:
 
         if len(self._call_times) >= RATE_LIMIT_CALLS:
             wait = RATE_LIMIT_WINDOW - (now - self._call_times[0]) + 1
-            print(f"  [RATE LIMIT] Sleeping {wait:.0f}s …")
+            print(f"  [RATE LIMIT] Sleeping {wait:.0f}s ...")
             time.sleep(wait)
 
         self._call_times.append(time.monotonic())
@@ -67,7 +67,7 @@ class CompaniesHouseClient:
 
     def _save_cache(self, company_name: str, data: dict):
         path = self._cache_path(company_name)
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # API calls
@@ -90,7 +90,7 @@ class CompaniesHouseClient:
         return resp.json()
 
     # ------------------------------------------------------------------
-    # Lookup (search → best match → profile → cache)
+    # Lookup (search ->best match ->profile ->cache)
     # ------------------------------------------------------------------
 
     def lookup_company(self, company_name: str) -> dict | None:
@@ -213,9 +213,9 @@ def fetch_all_companies(
                 })
 
             if done % 10 == 0 or done == total:
-                print(f"  Fetched {done}/{total} companies …")
+                print(f"  Fetched {done}/{total} companies ...")
 
     df = pd.DataFrame(rows)
     df.to_csv(output_path, index=False)
-    print(f"  Saved company data → {output_path}")
+    print(f"  Saved company data ->{output_path}")
     return df

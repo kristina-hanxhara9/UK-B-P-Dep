@@ -49,7 +49,7 @@ def overlap_analysis(sic_sets: dict[str, set[str]]) -> dict:
 
     # Pairwise
     for a, b in combinations(channels, 2):
-        key = f"{a} ∩ {b}"
+        key = f"{a} & {b}"
         inter = sic_sets[a] & sic_sets[b]
         result[key] = {"count": len(inter), "codes": sorted(inter)}
 
@@ -109,15 +109,15 @@ def generate_analysis_report(
     for key, val in overlaps.items():
         if key == "all_channels":
             continue
-        lines.append(f"\n  {key} — {val['count']} codes:")
+        lines.append(f"\n  {key} - {val['count']} codes:")
         for c in val["codes"]:
             desc = SIC_DESCRIPTIONS.get(c, "")
             lines.append(f"    {c}  {desc}")
 
     report = "\n".join(lines)
-    output_path.write_text(report)
+    output_path.write_text(report, encoding="utf-8")
     print(report)
-    print(f"\n  Saved analysis report → {output_path}")
+    print(f"\n  Saved analysis report ->{output_path}")
     return report
 
 
@@ -148,4 +148,4 @@ def plot_sic_heatmap(matrix: pd.DataFrame, output_path: Path):
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-    print(f"  Saved heatmap → {output_path}")
+    print(f"  Saved heatmap ->{output_path}")

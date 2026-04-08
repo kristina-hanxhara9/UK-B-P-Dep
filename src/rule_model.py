@@ -18,7 +18,7 @@ def build_rules(
     matrix: pd.DataFrame,
     keyword_data: dict | None = None,
 ) -> dict:
-    """Derive classification rules from the SIC × channel matrix.
+    """Derive classification rules from the SIC x channel matrix.
 
     Rules
     -----
@@ -81,7 +81,7 @@ def predict_channel(
             for ch, w in weights[sic].items():
                 sic_scores[ch] = sic_scores.get(ch, 0.0) + w
 
-    # Name keyword scores — only if discovered from data
+    # Name keyword scores -only if discovered from data
     kw_scores: dict[str, float] = {}
     if company_name and "keyword_scores" in rules:
         kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
@@ -122,7 +122,6 @@ def predict_all(df: pd.DataFrame, rules: dict) -> pd.Series:
 def evaluate_rule_model(
     df: pd.DataFrame,
     rules: dict,
-    output_path: Path,
 ) -> dict:
     """Evaluate the rule-based model against ground-truth channel labels."""
     predictions = predict_all(df, rules)
@@ -133,29 +132,9 @@ def evaluate_rule_model(
     report = classification_report(y_true, y_pred, labels=labels, zero_division=0)
     cm = confusion_matrix(y_true, y_pred, labels=labels)
 
-    lines: list[str] = []
-    lines.append("=" * 80)
-    lines.append("RULE-BASED MODEL EVALUATION")
-    lines.append("=" * 80)
-    lines.append(f"\nFeatures used: SIC codes" + (
-        " + data-driven name keywords" if "keyword_scores" in rules else " (no name keywords)"
-    ))
-    lines.append(f"\nAccuracy: {(y_true == y_pred).mean():.2%}")
-    lines.append(f"\n{report}")
-    lines.append("\nConfusion Matrix:")
-    lines.append(f"Labels: {labels}")
-    lines.append(str(cm))
-
-    if "keyword_scores" in rules:
-        lines.append("\nDiscovered keywords used in rules:")
-        for ch, scored in rules["keyword_scores"].items():
-            top_words = [w for w, _ in scored[:10]]
-            lines.append(f"  {ch}: {', '.join(top_words)}")
-
-    result_text = "\n".join(lines)
-    output_path.write_text(result_text)
-    print(result_text)
-    print(f"\n  Saved rule model results → {output_path}")
+    acc = float((y_true == y_pred).mean())
+    print(f"  Rule model accuracy: {acc:.2%}")
+    print(f"\n{report}")
 
     return {
         "accuracy": float((y_true == y_pred).mean()),
