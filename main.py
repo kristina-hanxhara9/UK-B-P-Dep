@@ -17,6 +17,11 @@ import argparse
 import sys
 from pathlib import Path
 
+# Ensure project root is on sys.path so `src` imports work from any directory
+_project_root = Path(__file__).resolve().parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 import pandas as pd
 
 import config
@@ -121,11 +126,11 @@ def step_4_rule_model(
 def step_4b_confidence_scoring(df: pd.DataFrame, rules: dict):
     """Step 4b: Score every company with confidence levels + evidence."""
     print("\n" + "=" * 60)
-    print("STEP 4b — Confidence-Scored Predictions")
+    print("STEP 4b — Confidence-Scored Predictions + Excel Output")
     print("=" * 60)
 
     scored_df = score_all_companies(df, rules)
-    generate_confidence_report(scored_df, config.OUTPUT_DIR)
+    generate_confidence_report(scored_df, rules, config.OUTPUT_DIR)
     return scored_df
 
 

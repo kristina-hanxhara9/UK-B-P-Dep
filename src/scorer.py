@@ -1,5 +1,14 @@
 """Confidence-scored channel predictions with transparent evidence.
 
+Outputs a multi-sheet Excel file:
+  - All Companies       — every company with prediction + confidence + evidence
+  - Builders Merchants  — filtered to that predicted channel
+  - Plumbing Merchants  — filtered
+  - Department Stores   — filtered
+  - Top 3 SIC per Channel   — summary of top 3 SIC codes per channel
+  - Top 3 KW per Channel    — summary of top 3 keywords per channel
+  - SIC + KW Combined       — top 3 of each side by side per channel
+
 Confidence levels
 -----------------
 HIGH   — Both SIC codes AND name keywords agree on the predicted channel.
@@ -25,20 +34,12 @@ def score_company(
     company_name: str,
     rules: dict,
 ) -> dict:
-    """Score a single company and return prediction + evidence + confidence.
-
-    Returns
-    -------
-    dict with keys:
-        predicted_channel, confidence, combined_score,
-        sic_top_channel, sic_scores, top_3_sic,
-        kw_top_channel, kw_scores, top_3_keywords
-    """
+    """Score a single company and return prediction + evidence + confidence."""
     sic_weights = rules["sic_weights"]
 
     # --- SIC evidence ---
     sic_scores: dict[str, float] = {}
-    sic_detail: list[tuple[str, str, float]] = []  # (sic, channel, weight)
+    sic_detail: list[tuple[str, str, float]] = []
 
     for sic in sic_codes:
         if sic in sic_weights:
@@ -50,12 +51,11 @@ def score_company(
 
     # --- Keyword evidence ---
     kw_scores: dict[str, float] = {}
-    kw_detail: dict[str, list[tuple[str, float]]] = {}  # channel -> [(word, score)]
+    kw_detail: dict[str, list[tuple[str, float]]] = {}
 
     if company_name and "keyword_scores" in rules:
         kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
 
-        # Find which specific keywords matched, per channel
         tokens = set(tokenize_name(company_name))
         for ch, scored_words in rules["keyword_scores"].items():
             hits = [(w, s) for w, s in scored_words if w in tokens]
@@ -126,18 +126,11 @@ def score_company(
 
 
 # ------------------------------------------------------------------
-# Batch scoring
+# Batch scoring → flat DataFrame with separate columns
 # ------------------------------------------------------------------
 
 def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
-    """Score every company in the DataFrame with confidence + evidence.
-
-    Returns a new DataFrame with columns:
-        input_name, matched_name, company_number, company_status, channel,
-        predicted_channel, confidence, combined_score,
-        sic_top_channel, kw_top_channel,
-        top_3_sic, top_3_keywords
-    """
+    """Score every company. Top 3 SIC and top 3 keywords are separate columns."""
     results: list[dict] = []
 
     for _, row in df.iterrows():
@@ -146,19 +139,7 @@ def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
 
         scoring = score_company(sic, name, rules)
 
-        # Format top 3 SIC as readable string
-        sic_str = "; ".join(
-            f"{s['sic']} ({s['weight']}) {s['description']}"
-            for s in scoring["top_3_sic"]
-        ) or "(none)"
-
-        # Format top 3 keywords as readable string
-        kw_str = "; ".join(
-            f"{k['keyword']} ({k['chi2_score']})"
-            for k in scoring["top_3_keywords"]
-        ) or "(none)"
-
-        results.append({
+        rec: dict = {
             "input_name": row.get("input_name", ""),
             "matched_name": row.get("matched_name", ""),
             "company_number": row.get("company_number", ""),
@@ -167,51 +148,198 @@ def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
             "date_of_creation": row.get("date_of_creation", ""),
             "full_address": row.get("full_address", ""),
             "postcode": row.get("postcode", ""),
-            "locality": row.get("locality", ""),
             "region": row.get("region", ""),
-            "country": row.get("country", ""),
             "sic_codes": row.get("sic_codes", "[]"),
             "actual_channel": row.get("channel", ""),
             "predicted_channel": scoring["predicted_channel"],
             "confidence": scoring["confidence"],
             "combined_score": scoring["combined_score"],
-            "sic_agrees": scoring["sic_top_channel"],
-            "keywords_agree": scoring["kw_top_channel"],
-            "top_3_sic_codes": sic_str,
-            "top_3_keywords": kw_str,
-        })
+            "sic_signal": scoring["sic_top_channel"] or "",
+            "keyword_signal": scoring["kw_top_channel"] or "",
+        }
+
+        # Top 3 SIC codes — separate columns
+        for i in range(3):
+            if i < len(scoring["top_3_sic"]):
+                s = scoring["top_3_sic"][i]
+                rec[f"sic_{i+1}_code"] = s["sic"]
+                rec[f"sic_{i+1}_weight"] = s["weight"]
+                rec[f"sic_{i+1}_description"] = s["description"]
+            else:
+                rec[f"sic_{i+1}_code"] = ""
+                rec[f"sic_{i+1}_weight"] = ""
+                rec[f"sic_{i+1}_description"] = ""
+
+        # Top 3 keywords — separate columns
+        for i in range(3):
+            if i < len(scoring["top_3_keywords"]):
+                k = scoring["top_3_keywords"][i]
+                rec[f"keyword_{i+1}"] = k["keyword"]
+                rec[f"keyword_{i+1}_score"] = k["chi2_score"]
+            else:
+                rec[f"keyword_{i+1}"] = ""
+                rec[f"keyword_{i+1}_score"] = ""
+
+        results.append(rec)
 
     return pd.DataFrame(results)
 
 
 # ------------------------------------------------------------------
-# Report
+# Channel summary tables
+# ------------------------------------------------------------------
+
+def _build_top3_sic_summary(rules: dict) -> pd.DataFrame:
+    """Top 3 SIC codes per channel by weight."""
+    rows: list[dict] = []
+    sic_weights = rules["sic_weights"]
+    channels = set()
+    for sic_data in sic_weights.values():
+        channels.update(sic_data.keys())
+
+    for ch in sorted(channels):
+        # Collect (sic, weight) pairs for this channel
+        sic_w = [(sic, data[ch]) for sic, data in sic_weights.items() if data.get(ch, 0) > 0]
+        sic_w.sort(key=lambda x: x[1], reverse=True)
+        for rank, (sic, w) in enumerate(sic_w[:3], 1):
+            rows.append({
+                "channel": ch,
+                "rank": rank,
+                "sic_code": sic,
+                "weight": round(w, 3),
+                "description": SIC_DESCRIPTIONS.get(sic, ""),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def _build_top3_kw_summary(rules: dict) -> pd.DataFrame:
+    """Top 3 keywords per channel by chi2 score."""
+    rows: list[dict] = []
+    if "keyword_scores" not in rules:
+        return pd.DataFrame(columns=["channel", "rank", "keyword", "chi2_score"])
+
+    for ch, scored in rules["keyword_scores"].items():
+        for rank, (word, score) in enumerate(scored[:3], 1):
+            rows.append({
+                "channel": ch,
+                "rank": rank,
+                "keyword": word,
+                "chi2_score": round(score, 2),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def _build_combined_summary(rules: dict) -> pd.DataFrame:
+    """Top 3 SIC + top 3 keywords side by side per channel."""
+    sic_summary = _build_top3_sic_summary(rules)
+    kw_summary = _build_top3_kw_summary(rules)
+
+    channels = sorted(
+        set(sic_summary["channel"].unique()) | set(kw_summary["channel"].unique())
+    )
+
+    rows: list[dict] = []
+    for ch in channels:
+        sic_ch = sic_summary[sic_summary["channel"] == ch]
+        kw_ch = kw_summary[kw_summary["channel"] == ch]
+
+        for rank in range(1, 4):
+            rec = {"channel": ch, "rank": rank}
+
+            sic_row = sic_ch[sic_ch["rank"] == rank]
+            if not sic_row.empty:
+                r = sic_row.iloc[0]
+                rec["sic_code"] = r["sic_code"]
+                rec["sic_weight"] = r["weight"]
+                rec["sic_description"] = r["description"]
+            else:
+                rec["sic_code"] = ""
+                rec["sic_weight"] = ""
+                rec["sic_description"] = ""
+
+            kw_row = kw_ch[kw_ch["rank"] == rank]
+            if not kw_row.empty:
+                r = kw_row.iloc[0]
+                rec["keyword"] = r["keyword"]
+                rec["keyword_chi2"] = r["chi2_score"]
+            else:
+                rec["keyword"] = ""
+                rec["keyword_chi2"] = ""
+
+            rows.append(rec)
+
+    return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------
+# Multi-sheet Excel output
+# ------------------------------------------------------------------
+
+def generate_output_excel(
+    scored_df: pd.DataFrame,
+    rules: dict,
+    output_path: Path,
+):
+    """Write a multi-sheet Excel file with all results."""
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+
+        # Sheet 1: All Companies
+        scored_df.to_excel(writer, sheet_name="All Companies", index=False)
+
+        # Sheets 2-4: one per predicted channel
+        for channel in sorted(scored_df["predicted_channel"].unique()):
+            sheet_name = channel[:31]  # Excel sheet name limit
+            subset = scored_df[scored_df["predicted_channel"] == channel]
+            subset.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        # Sheet 5: Top 3 SIC per Channel
+        sic_summary = _build_top3_sic_summary(rules)
+        sic_summary.to_excel(writer, sheet_name="Top 3 SIC per Channel", index=False)
+
+        # Sheet 6: Top 3 Keywords per Channel
+        kw_summary = _build_top3_kw_summary(rules)
+        kw_summary.to_excel(writer, sheet_name="Top 3 KW per Channel", index=False)
+
+        # Sheet 7: Combined SIC + Keywords
+        combined = _build_combined_summary(rules)
+        combined.to_excel(writer, sheet_name="SIC + KW Combined", index=False)
+
+    print(f"  Saved output Excel → {output_path}")
+
+
+# ------------------------------------------------------------------
+# Text report
 # ------------------------------------------------------------------
 
 def generate_confidence_report(
     scored_df: pd.DataFrame,
+    rules: dict,
     output_dir: Path,
 ) -> str:
-    """Save scored predictions as CSV and generate a summary report."""
-    # Save full details to CSV
+    """Save scored predictions as Excel + CSV + text summary."""
+    # Multi-sheet Excel
+    excel_path = output_dir / "results.xlsx"
+    generate_output_excel(scored_df, rules, excel_path)
+
+    # CSV backup
     csv_path = output_dir / "scored_predictions.csv"
     scored_df.to_csv(csv_path, index=False)
-    print(f"  Saved scored predictions → {csv_path}")
 
-    # Summary
+    # Text summary
     total = len(scored_df)
     lines: list[str] = []
     lines.append("=" * 80)
     lines.append("CONFIDENCE-SCORED PREDICTIONS SUMMARY")
     lines.append("=" * 80)
 
-    # Confidence distribution
     lines.append("\nConfidence Distribution:")
     for level in ["HIGH", "MEDIUM", "LOW"]:
         count = (scored_df["confidence"] == level).sum()
-        lines.append(f"  {level:>6s}: {count:>4d} ({count/total:.0%})")
+        pct = f"{count/total:.0%}" if total > 0 else "0%"
+        lines.append(f"  {level:>6s}: {count:>4d} ({pct})")
 
-    # Accuracy by confidence level
     if "actual_channel" in scored_df.columns:
         correct = scored_df["predicted_channel"] == scored_df["actual_channel"]
         lines.append("\nAccuracy by Confidence Level:")
@@ -220,40 +348,46 @@ def generate_confidence_report(
             if mask.sum() > 0:
                 acc = correct[mask].mean()
                 lines.append(f"  {level:>6s}: {acc:.0%} ({correct[mask].sum()}/{mask.sum()})")
-
         lines.append(f"\n  Overall: {correct.mean():.0%} ({correct.sum()}/{total})")
 
-    # Signal agreement breakdown
     lines.append("\nSignal Agreement:")
-    both_agree = (
-        (scored_df["sic_agrees"] == scored_df["predicted_channel"]) &
-        (scored_df["keywords_agree"] == scored_df["predicted_channel"])
+    both = (
+        (scored_df["sic_signal"] == scored_df["predicted_channel"]) &
+        (scored_df["keyword_signal"] == scored_df["predicted_channel"])
     ).sum()
     sic_only = (
-        (scored_df["sic_agrees"] == scored_df["predicted_channel"]) &
-        (scored_df["keywords_agree"] != scored_df["predicted_channel"])
+        (scored_df["sic_signal"] == scored_df["predicted_channel"]) &
+        (scored_df["keyword_signal"] != scored_df["predicted_channel"])
     ).sum()
     kw_only = (
-        (scored_df["sic_agrees"] != scored_df["predicted_channel"]) &
-        (scored_df["keywords_agree"] == scored_df["predicted_channel"])
+        (scored_df["sic_signal"] != scored_df["predicted_channel"]) &
+        (scored_df["keyword_signal"] == scored_df["predicted_channel"])
     ).sum()
-    neither = total - both_agree - sic_only - kw_only
-    lines.append(f"  SIC + Keywords agree: {both_agree}")
+    neither = total - both - sic_only - kw_only
+    lines.append(f"  SIC + Keywords agree: {both}")
     lines.append(f"  SIC only:             {sic_only}")
     lines.append(f"  Keywords only:        {kw_only}")
     lines.append(f"  Neither:              {neither}")
 
-    # Sample predictions at each confidence level
+    # Samples
     for level in ["HIGH", "MEDIUM", "LOW"]:
         subset = scored_df[scored_df["confidence"] == level].head(3)
         if subset.empty:
             continue
         lines.append(f"\nSample {level} confidence predictions:")
         for _, row in subset.iterrows():
-            lines.append(f"  Company:   {row['input_name']}")
-            lines.append(f"  Predicted: {row['predicted_channel']}")
-            lines.append(f"  SIC evidence:     {row['top_3_sic_codes']}")
-            lines.append(f"  Keyword evidence: {row['top_3_keywords']}")
+            lines.append(f"  Company:     {row['input_name']}")
+            lines.append(f"  Predicted:   {row['predicted_channel']} ({row['confidence']})")
+            sic_evidence = ", ".join(
+                f"{row[f'sic_{i}_code']} ({row[f'sic_{i}_weight']})"
+                for i in range(1, 4) if row.get(f"sic_{i}_code")
+            ) or "(none)"
+            kw_evidence = ", ".join(
+                f"{row[f'keyword_{i}']} ({row[f'keyword_{i}_score']})"
+                for i in range(1, 4) if row.get(f"keyword_{i}")
+            ) or "(none)"
+            lines.append(f"  SIC evidence:     {sic_evidence}")
+            lines.append(f"  Keyword evidence: {kw_evidence}")
             lines.append("")
 
     report = "\n".join(lines)
