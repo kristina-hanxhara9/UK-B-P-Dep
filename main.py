@@ -185,25 +185,28 @@ def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
         return None
 
 
-def step_6_discover(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
-    """Step 6: Discover NEW companies from Companies House by SIC code."""
+def step_6_discover(df: pd.DataFrame, rules: dict) -> dict[str, pd.DataFrame]:
+    """Step 6: Discover NEW companies from Companies House.
+
+    Uses top 4 SIC codes and top 4 keywords per channel.
+    Returns dict with 'sic', 'keyword', 'combined' DataFrames.
+    """
     print("\n" + "=" * 60)
     print("STEP 6 - Discover New Companies from Companies House")
     print("=" * 60)
 
     if not config.API_KEY:
         print("[ERROR] COMPANIES_HOUSE_API_KEY required for discovery.")
-        return pd.DataFrame()
+        return {}
 
-    # Get existing company numbers to exclude
     existing_numbers = set(df["company_number"].dropna().astype(str).tolist())
     print(f"  Excluding {len(existing_numbers)} existing companies")
 
     client = CompaniesHouseClient(config.API_KEY, config.RAW_CACHE_DIR)
-    discovered_df = discover_new_companies(
+    discovered = discover_new_companies(
         client, rules, existing_numbers, DISCOVERED_CSV
     )
-    return discovered_df
+    return discovered
 
 
 # ------------------------------------------------------------------
@@ -465,31 +468,62 @@ def main():
     # ----------------------------------------------------------
     # Step 6 - Discover new companies from Companies House
     # ----------------------------------------------------------
-    discovered_df = None
+    discovered = None
     if args.step in ("all", "6") and rules:
-        discovered_df = step_6_discover(df, rules)
+        discovered = step_6_discover(df, rules)
 
-        if discovered_df is not None and not discovered_df.empty:
-            # Score ALL discovered companies with the learned rules
+        has_results = discovered and any(
+            not v.empty for v in discovered.values() if isinstance(v, pd.DataFrame)
+        )
+
+        if has_results:
             print("\n" + "=" * 60)
             print("SCORING DISCOVERED COMPANIES")
             print("=" * 60)
 
-            scored_discovered = score_all_companies(discovered_df, rules)
+            with pd.ExcelWriter(DISCOVERED_EXCEL, engine="openpyxl") as writer:
+                all_scored = []
 
-            # Show distribution of discovered companies
-            print(f"\n  Total discovered: {len(scored_discovered)}")
-            print("\n  Predicted channel distribution:")
-            print(scored_discovered["predicted_channel"].value_counts().to_string())
-            print("\n  Confidence distribution:")
-            print(scored_discovered["confidence"].value_counts().to_string())
+                for label, label_name in [
+                    ("sic", "SIC Matches"),
+                    ("keyword", "Keyword Matches"),
+                    ("combined", "Combined Matches"),
+                ]:
+                    disc_df = discovered.get(label, pd.DataFrame())
+                    if disc_df.empty:
+                        print(f"\n  {label_name}: 0 companies")
+                        continue
 
-            # Write discovered companies to separate Excel
-            generate_output_excel(
-                scored_discovered, rules, DISCOVERED_EXCEL,
-                extra_sheets=extra_sheets,
-            )
-            print(f"\n  Discovered companies Excel -> {DISCOVERED_EXCEL}")
+                    scored = score_all_companies(disc_df, rules)
+                    scored["match_type"] = label
+                    all_scored.append(scored)
+
+                    # Per-channel sheets for this match type
+                    channels = sorted(scored["predicted_channel"].unique())
+                    for ch in channels:
+                        sheet_name = f"{label[:3]}_{ch}"[:31]
+                        subset = scored[scored["predicted_channel"] == ch]
+                        subset.to_excel(writer, sheet_name=sheet_name, index=False)
+
+                    print(f"\n  {label_name}: {len(scored)} companies")
+                    print(f"    Channels: {scored['predicted_channel'].value_counts().to_string()}")
+                    print(f"    Confidence: {scored['confidence'].value_counts().to_string()}")
+
+                # Summary sheet with ALL discovered companies
+                if all_scored:
+                    summary = pd.concat(all_scored, ignore_index=True)
+                    summary_cols = [
+                        "matched_name", "company_number", "predicted_channel",
+                        "confidence", "match_type",
+                        "sic_1_code", "sic_1_description",
+                        "keyword_1", "keyword_2", "keyword_3",
+                    ]
+                    avail = [c for c in summary_cols if c in summary.columns]
+                    summary[avail].to_excel(writer, sheet_name="All Discovered", index=False)
+
+                    print(f"\n  TOTAL discovered: {len(summary)}")
+
+            print(f"\n  Saved -> {DISCOVERED_EXCEL}")
 
     elif args.step == "6" and not rules:
         print("\n  [ERROR] Rules required for discovery. Run steps 2-4 first.")
@@ -499,9 +533,9 @@ def main():
     # ----------------------------------------------------------
     print("\n" + "=" * 60)
     output_files = [str(RESULTS_EXCEL)]
-    if discovered_df is not None and not discovered_df.empty:
+    if discovered and any(not v.empty for v in discovered.values() if isinstance(v, pd.DataFrame)):
         output_files.append(str(DISCOVERED_EXCEL))
-    print(f"DONE - Output files:")
+    print("DONE - Output files:")
     for f in output_files:
         print(f"  {f}")
     print("=" * 60)
