@@ -49,13 +49,9 @@ def prepare_features(
     mlb : MultiLabelBinarizer
         Fitted SIC binarizer (needed for inference on new data).
     """
-    # Filter to active companies only
-    active = df[df["company_status"] == "active"].copy()
-    print(f"  Active companies: {len(active)} / {len(df)} total")
-
-    if active.empty:
-        print("  [WARN] No active companies found -using all companies instead.")
-        active = df.copy()
+    # Data is already filtered to active-only upstream in main.py
+    active = df.copy()
+    print(f"  Companies for ML training: {len(active)}")
 
     # Parse SIC codes
     active["sic_list"] = active["sic_codes"].apply(
@@ -176,6 +172,7 @@ def train_and_evaluate(
         "classification_report": report,
         "confusion_matrix": cm,
         "model": clf,
+        "predictions": pd.Series(y_pred, index=y.index),
     }
 
 

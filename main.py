@@ -41,6 +41,55 @@ SIC_MATRIX_CSV = config.PROCESSED_DIR / "sic_channel_matrix.csv"
 RESULTS_EXCEL = config.OUTPUT_DIR / "results.xlsx"
 
 
+import json as _json
+
+
+def filter_companies(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter to active companies only and remove excluded SIC codes.
+
+    This runs BEFORE any analysis so that excluded/inactive companies
+    never influence the models or appear in results.
+    """
+    print("\n" + "=" * 60)
+    print("FILTERING - Active only + removing excluded SIC codes")
+    print("=" * 60)
+
+    total = len(df)
+
+    # 1. Active only
+    df = df[df["company_status"] == "active"].copy()
+    active_count = len(df)
+    print(f"  Active companies: {active_count} / {total}")
+
+    removed_inactive = total - active_count
+    if removed_inactive:
+        print(f"  Removed {removed_inactive} non-active companies")
+
+    # 2. Remove excluded SIC codes from each company's sic_codes list
+    excluded = config.EXCLUDED_SIC_CODES
+    if excluded:
+        print(f"  Excluded SIC codes: {', '.join(sorted(excluded))}")
+
+        def _clean_sics(sic_str):
+            codes = _json.loads(sic_str) if isinstance(sic_str, str) else (sic_str or [])
+            cleaned = [c for c in codes if c not in excluded]
+            return _json.dumps(cleaned)
+
+        df["sic_codes"] = df["sic_codes"].apply(_clean_sics)
+
+        # Drop companies that now have zero SIC codes after exclusion
+        has_sics = df["sic_codes"].apply(
+            lambda x: len(_json.loads(x) if isinstance(x, str) else x) > 0
+        )
+        dropped = (~has_sics).sum()
+        if dropped:
+            print(f"  Dropped {dropped} companies with no remaining SIC codes")
+            df = df[has_sics]
+
+    print(f"  Final dataset: {len(df)} companies")
+    return df.reset_index(drop=True)
+
+
 def step_1_fetch(excel_path: Path) -> pd.DataFrame:
     """Step 1: Read Excel and fetch data from Companies House."""
     print("\n" + "=" * 60)
@@ -293,16 +342,21 @@ def main():
     # Load or fetch company data
     # ----------------------------------------------------------
     if args.step in ("all", "1") and not args.skip_api:
-        df = step_1_fetch(args.excel)
+        df_raw = step_1_fetch(args.excel)
     elif COMPANY_DATA_CSV.exists():
         print(f"\n  Loading cached company data from {COMPANY_DATA_CSV}")
-        df = pd.read_csv(COMPANY_DATA_CSV)
+        df_raw = pd.read_csv(COMPANY_DATA_CSV)
     else:
         print(
             "[ERROR] No cached data found. Run step 1 first "
             "(without --skip-api) to fetch company data."
         )
         sys.exit(1)
+
+    # ----------------------------------------------------------
+    # Filter: active only + remove excluded SIC codes
+    # ----------------------------------------------------------
+    df = filter_companies(df_raw)
 
     # ----------------------------------------------------------
     # Steps 2-5
@@ -347,6 +401,19 @@ def main():
     # Scored predictions + everything into one Excel
     if rules:
         scored_df = score_all_companies(df, rules)
+
+        # Add ML model prediction alongside rule-based prediction
+        if ml_results and "predictions" in ml_results:
+            ml_preds = ml_results["predictions"]
+            scored_df["ml_predicted_channel"] = scored_df.index.map(
+                ml_preds
+            ).fillna("")
+            # Agreement column: do both models agree?
+            scored_df["models_agree"] = (
+                scored_df["predicted_channel"] == scored_df["ml_predicted_channel"]
+            ).map({True: "Yes", False: "No"})
+            scored_df.loc[scored_df["ml_predicted_channel"] == "", "models_agree"] = ""
+
         generate_output_excel(scored_df, rules, RESULTS_EXCEL, extra_sheets=extra_sheets)
     else:
         # No rules built yet - just output raw data

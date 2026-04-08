@@ -18,6 +18,11 @@ EXCEL_PATH = INPUT_DIR / "companies.xlsx"
 # Channel names (also the expected sheet names in the Excel file)
 CHANNELS = ["Builders Merchants", "Plumbing Merchants", "Department Stores"]
 
+# SIC codes to exclude from all analysis (irrelevant to channel classification)
+EXCLUDED_SIC_CODES = {
+    "43110",  # Demolition
+}
+
 # Companies House API
 API_BASE_URL = "https://api.company-information.service.gov.uk"
 API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")

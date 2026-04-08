@@ -283,17 +283,31 @@ def generate_output_excel(
     output_path: Path,
     extra_sheets: dict[str, pd.DataFrame] | None = None,
 ):
-    """Write a multi-sheet Excel file with all results."""
+    """Write a multi-sheet Excel file with all results.
+
+    Companies are split into per-channel sheets (no duplicates).
+    Each company appears in exactly one channel sheet based on its
+    predicted_channel.
+    """
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
 
-        # Sheet 1: All Companies
-        scored_df.to_excel(writer, sheet_name="All Companies", index=False)
-
-        # Sheets per predicted channel
-        for channel in sorted(scored_df["predicted_channel"].unique()):
+        # Per-channel sheets - each company appears in ONE sheet only
+        channels = sorted(scored_df["predicted_channel"].unique())
+        for channel in channels:
             sheet_name = channel[:31]
             subset = scored_df[scored_df["predicted_channel"] == channel]
             subset.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"    {channel}: {len(subset)} companies")
+
+        # Summary sheet with all companies (compact: key columns only)
+        summary_cols = [
+            "input_name", "matched_name", "company_number", "company_status",
+            "predicted_channel", "confidence",
+            "sic_1_code", "sic_1_description",
+            "keyword_1", "keyword_2", "keyword_3",
+        ]
+        available_cols = [c for c in summary_cols if c in scored_df.columns]
+        scored_df[available_cols].to_excel(writer, sheet_name="Summary (all)", index=False)
 
         # Top 3 SIC per Channel
         sic_summary = _build_top3_sic_summary(rules)
