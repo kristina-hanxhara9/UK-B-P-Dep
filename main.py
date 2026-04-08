@@ -9,8 +9,11 @@ Usage
     # Skip API calls, re-run analysis + models from cached data
     python main.py --skip-api
 
-    # Run a single step (1=API, 2=SIC mapping, 3=analysis, 4=rule model, 5=ML model)
+    # Run a single step (1=API, 2=SIC mapping, 3=analysis, 4=rule model, 5=ML model, 6=discover)
     python main.py --skip-api --step 3
+
+    # Discover new companies from Companies House (requires API key)
+    python main.py --skip-api --step 6
 """
 
 import argparse
@@ -33,12 +36,15 @@ from src.name_features import discover_keywords
 from src.rule_model import build_rules, evaluate_rule_model
 from src.scorer import score_all_companies, generate_output_excel
 from src.ml_model import prepare_features, train_and_evaluate
+from src.discovery import discover_new_companies
 from src.sic_mapping import SIC_DESCRIPTIONS
 
 
 COMPANY_DATA_CSV = config.PROCESSED_DIR / "company_data.csv"
 SIC_MATRIX_CSV = config.PROCESSED_DIR / "sic_channel_matrix.csv"
+DISCOVERED_CSV = config.PROCESSED_DIR / "discovered_companies.csv"
 RESULTS_EXCEL = config.OUTPUT_DIR / "results.xlsx"
+DISCOVERED_EXCEL = config.OUTPUT_DIR / "discovered_companies.xlsx"
 
 
 import json as _json
@@ -177,6 +183,27 @@ def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
     except ValueError as exc:
         print(f"  [ERROR] Cannot train ML model: {exc}")
         return None
+
+
+def step_6_discover(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
+    """Step 6: Discover NEW companies from Companies House by SIC code."""
+    print("\n" + "=" * 60)
+    print("STEP 6 - Discover New Companies from Companies House")
+    print("=" * 60)
+
+    if not config.API_KEY:
+        print("[ERROR] COMPANIES_HOUSE_API_KEY required for discovery.")
+        return pd.DataFrame()
+
+    # Get existing company numbers to exclude
+    existing_numbers = set(df["company_number"].dropna().astype(str).tolist())
+    print(f"  Excluding {len(existing_numbers)} existing companies")
+
+    client = CompaniesHouseClient(config.API_KEY, config.RAW_CACHE_DIR)
+    discovered_df = discover_new_companies(
+        client, rules, existing_numbers, DISCOVERED_CSV
+    )
+    return discovered_df
 
 
 # ------------------------------------------------------------------
@@ -327,9 +354,9 @@ def main():
     )
     parser.add_argument(
         "--step",
-        choices=["all", "1", "2", "3", "4", "5"],
+        choices=["all", "1", "2", "3", "4", "5", "6"],
         default="all",
-        help="Run a specific step or 'all' (default: all)",
+        help="Run a specific step or 'all' (default: all). Step 6 = discover new companies.",
     )
     parser.add_argument(
         "--skip-api",
@@ -369,12 +396,12 @@ def main():
         matrix = step_2_sic_mapping(df)
 
     keyword_data = None
-    if args.step in ("all", "3"):
+    if args.step in ("all", "3", "6"):
         keyword_data = step_3_analysis(df, matrix)
 
     rules = None
     rule_results = None
-    if args.step in ("all", "4"):
+    if args.step in ("all", "4", "6"):
         rules, rule_results = step_4_rule_model(df, matrix, keyword_data=keyword_data)
 
     ml_results = None
@@ -382,7 +409,7 @@ def main():
         ml_results = step_5_ml_model(df, keyword_data=keyword_data)
 
     # ----------------------------------------------------------
-    # Build single output Excel with ALL results
+    # Build single output Excel with ALL results (input companies)
     # ----------------------------------------------------------
     print("\n" + "=" * 60)
     print("GENERATING OUTPUT EXCEL")
@@ -435,8 +462,48 @@ def main():
                 sheet_df.to_excel(writer, sheet_name=name[:31], index=False)
         print(f"  Saved output -> {RESULTS_EXCEL}")
 
+    # ----------------------------------------------------------
+    # Step 6 - Discover new companies from Companies House
+    # ----------------------------------------------------------
+    discovered_df = None
+    if args.step in ("all", "6") and rules:
+        discovered_df = step_6_discover(df, rules)
+
+        if discovered_df is not None and not discovered_df.empty:
+            # Score ALL discovered companies with the learned rules
+            print("\n" + "=" * 60)
+            print("SCORING DISCOVERED COMPANIES")
+            print("=" * 60)
+
+            scored_discovered = score_all_companies(discovered_df, rules)
+
+            # Show distribution of discovered companies
+            print(f"\n  Total discovered: {len(scored_discovered)}")
+            print("\n  Predicted channel distribution:")
+            print(scored_discovered["predicted_channel"].value_counts().to_string())
+            print("\n  Confidence distribution:")
+            print(scored_discovered["confidence"].value_counts().to_string())
+
+            # Write discovered companies to separate Excel
+            generate_output_excel(
+                scored_discovered, rules, DISCOVERED_EXCEL,
+                extra_sheets=extra_sheets,
+            )
+            print(f"\n  Discovered companies Excel -> {DISCOVERED_EXCEL}")
+
+    elif args.step == "6" and not rules:
+        print("\n  [ERROR] Rules required for discovery. Run steps 2-4 first.")
+
+    # ----------------------------------------------------------
+    # Summary
+    # ----------------------------------------------------------
     print("\n" + "=" * 60)
-    print(f"DONE - All results in: {RESULTS_EXCEL}")
+    output_files = [str(RESULTS_EXCEL)]
+    if discovered_df is not None and not discovered_df.empty:
+        output_files.append(str(DISCOVERED_EXCEL))
+    print(f"DONE - Output files:")
+    for f in output_files:
+        print(f"  {f}")
     print("=" * 60)
 
 
