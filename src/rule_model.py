@@ -22,26 +22,39 @@ def build_rules(
 
     Rules
     -----
-    For each SIC code, compute a weight per channel:
-        weight(sic, channel) = count(sic, channel) / total(sic)
+    For each SIC code, compute a CLASS-SIZE-NORMALISED weight per channel:
 
-    If *keyword_data* is provided (from ``discover_keywords()``), the
-    keyword scores are also stored in the rules for blending at prediction.
+        raw_rate(sic, ch) = count(sic, ch) / total_companies_in_ch
+        weight(sic, ch) = raw_rate(sic, ch) / sum(raw_rate(sic, *))
 
-    Returns a dict with keys:
-        sic_weights, fallback, keyword_scores (optional)
+    This means: "what fraction of builders merchants have this SIC code?"
+    vs "what fraction of plumbing merchants have it?" -- regardless of
+    how many companies are in each input sheet.
+
+    Without this normalisation, a channel with 800 companies always
+    dominates over one with 50.
     """
     numeric = matrix.drop(columns=["description"], errors="ignore")
-    row_totals = numeric.sum(axis=1)
+
+    # Total companies per channel (column sums)
+    channel_totals = numeric.sum(axis=0)
+    # Avoid division by zero
+    channel_totals = channel_totals.replace(0, 1)
 
     sic_weights: dict[str, dict[str, float]] = {}
     for sic in numeric.index:
-        total = row_totals[sic]
-        if total == 0:
+        # Rate: what proportion of each channel's companies have this SIC
+        rates = {}
+        for channel in numeric.columns:
+            rates[channel] = float(numeric.loc[sic, channel]) / float(channel_totals[channel])
+
+        rate_sum = sum(rates.values())
+        if rate_sum == 0:
             continue
+
+        # Normalise rates to sum to 1 (so they're comparable)
         sic_weights[sic] = {
-            channel: float(numeric.loc[sic, channel] / total)
-            for channel in numeric.columns
+            ch: rate / rate_sum for ch, rate in rates.items()
         }
 
     # Fallback: channel with the most companies overall
@@ -81,7 +94,7 @@ def predict_channel(
             for ch, w in weights[sic].items():
                 sic_scores[ch] = sic_scores.get(ch, 0.0) + w
 
-    # Name keyword scores -only if discovered from data
+    # Name keyword scores - only if discovered from data
     kw_scores: dict[str, float] = {}
     if company_name and "keyword_scores" in rules:
         kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
@@ -137,7 +150,7 @@ def evaluate_rule_model(
     print(f"\n{report}")
 
     return {
-        "accuracy": float((y_true == y_pred).mean()),
+        "accuracy": acc,
         "classification_report": report,
         "confusion_matrix": cm,
         "predictions": predictions,
