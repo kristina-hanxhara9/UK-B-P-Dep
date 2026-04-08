@@ -34,18 +34,30 @@ def score_company(
     company_name: str,
     rules: dict,
 ) -> dict:
-    """Score a single company and return prediction + evidence + confidence."""
+    """Score a company against each channel's independent profile."""
+    profiles = rules.get("channel_profiles", {})
     sic_weights = rules["sic_weights"]
 
-    # --- SIC evidence ---
+    # --- SIC evidence: score against each channel independently ---
     sic_scores: dict[str, float] = {}
     sic_detail: list[tuple[str, str, float]] = []
 
-    for sic in sic_codes:
-        if sic in sic_weights:
-            for ch, w in sic_weights[sic].items():
-                sic_scores[ch] = sic_scores.get(ch, 0.0) + w
-                sic_detail.append((sic, ch, w))
+    for channel, profile in profiles.items():
+        score = 0.0
+        for sic in sic_codes:
+            if sic in profile:
+                w = profile[sic]
+                score += w
+                sic_detail.append((sic, channel, w))
+        sic_scores[channel] = score
+
+    # Fallback: use sic_weights if no channel_profiles
+    if not profiles:
+        for sic in sic_codes:
+            if sic in sic_weights:
+                for ch, w in sic_weights[sic].items():
+                    sic_scores[ch] = sic_scores.get(ch, 0.0) + w
+                    sic_detail.append((sic, ch, w))
 
     sic_top_channel = max(sic_scores, key=sic_scores.get) if sic_scores else None
 
@@ -190,23 +202,19 @@ def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
 # ------------------------------------------------------------------
 
 def _build_top3_sic_summary(rules: dict) -> pd.DataFrame:
-    """Top 3 SIC codes per channel by weight."""
+    """Top 3 SIC codes per channel from independent channel profiles."""
     rows: list[dict] = []
-    sic_weights = rules["sic_weights"]
-    channels = set()
-    for sic_data in sic_weights.values():
-        channels.update(sic_data.keys())
+    profiles = rules.get("channel_profiles", {})
 
-    for ch in sorted(channels):
-        # Collect (sic, weight) pairs for this channel
-        sic_w = [(sic, data[ch]) for sic, data in sic_weights.items() if data.get(ch, 0) > 0]
-        sic_w.sort(key=lambda x: x[1], reverse=True)
-        for rank, (sic, w) in enumerate(sic_w[:3], 1):
+    for ch in sorted(profiles.keys()):
+        profile = profiles[ch]
+        top_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:3]
+        for rank, (sic, prevalence) in enumerate(top_sics, 1):
             rows.append({
                 "channel": ch,
                 "rank": rank,
                 "sic_code": sic,
-                "weight": round(w, 3),
+                "prevalence": f"{prevalence:.0%}",
                 "description": SIC_DESCRIPTIONS.get(sic, ""),
             })
 

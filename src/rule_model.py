@@ -1,69 +1,87 @@
-"""Rule-based channel classifier using SIC code weights and data-driven name keywords."""
+"""Rule-based channel classifier using independent channel profiles.
+
+Each channel is analysed SEPARATELY:
+  - What SIC codes appear in this channel's companies, and at what rate?
+  - What keywords appear in this channel's company names?
+
+Channels do NOT compete against each other during analysis.
+At prediction time, a company is scored against each channel's profile
+independently, and assigned to the best-matching channel.
+"""
 
 import json
-from pathlib import Path
 
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 
-from src.analysis import compute_channel_sic_sets
 from src.name_features import keyword_channel_scores
 
 
 # ------------------------------------------------------------------
-# Rule construction
+# Build independent channel profiles
 # ------------------------------------------------------------------
 
 def build_rules(
     matrix: pd.DataFrame,
     keyword_data: dict | None = None,
 ) -> dict:
-    """Derive classification rules from the SIC x channel matrix.
+    """Build an independent SIC profile for each channel.
 
-    Rules
-    -----
-    For each SIC code, compute a CLASS-SIZE-NORMALISED weight per channel:
+    For each channel, independently compute:
+        prevalence(sic, channel) = count(sic, channel) / total_companies_in_channel
 
-        raw_rate(sic, ch) = count(sic, ch) / total_companies_in_ch
-        weight(sic, ch) = raw_rate(sic, ch) / sum(raw_rate(sic, *))
-
-    This means: "what fraction of builders merchants have this SIC code?"
-    vs "what fraction of plumbing merchants have it?" -- regardless of
-    how many companies are in each input sheet.
-
-    Without this normalisation, a channel with 800 companies always
-    dominates over one with 50.
+    This tells us: "X% of builders merchants have SIC 46730".
+    Each channel's profile is self-contained - it doesn't know about
+    other channels.
     """
     numeric = matrix.drop(columns=["description"], errors="ignore")
 
-    # Total companies per channel (column sums)
-    channel_totals = numeric.sum(axis=0)
-    # Avoid division by zero
-    channel_totals = channel_totals.replace(0, 1)
-
-    sic_weights: dict[str, dict[str, float]] = {}
-    for sic in numeric.index:
-        # Rate: what proportion of each channel's companies have this SIC
-        rates = {}
-        for channel in numeric.columns:
-            rates[channel] = float(numeric.loc[sic, channel]) / float(channel_totals[channel])
-
-        rate_sum = sum(rates.values())
-        if rate_sum == 0:
+    # Build independent profile per channel
+    channel_profiles: dict[str, dict[str, float]] = {}
+    for channel in numeric.columns:
+        col = numeric[channel]
+        total = col.sum()
+        if total == 0:
+            channel_profiles[channel] = {}
             continue
 
-        # Normalise rates to sum to 1 (so they're comparable)
-        sic_weights[sic] = {
-            ch: rate / rate_sum for ch, rate in rates.items()
-        }
+        profile = {}
+        for sic in numeric.index:
+            count = float(col[sic])
+            if count > 0:
+                profile[sic] = count / total  # prevalence in THIS channel
+        channel_profiles[channel] = profile
 
-    # Fallback: channel with the most companies overall
+    # Also store as sic_weights format for scorer compatibility
+    # Convert from {channel: {sic: rate}} to {sic: {channel: rate}}
+    all_sics = set()
+    for profile in channel_profiles.values():
+        all_sics.update(profile.keys())
+
+    sic_weights: dict[str, dict[str, float]] = {}
+    for sic in all_sics:
+        sic_weights[sic] = {}
+        for channel, profile in channel_profiles.items():
+            if sic in profile:
+                sic_weights[sic][channel] = profile[sic]
+
     fallback = numeric.sum(axis=0).idxmax()
 
-    rules = {"sic_weights": sic_weights, "fallback": fallback}
+    rules = {
+        "sic_weights": sic_weights,
+        "channel_profiles": channel_profiles,
+        "fallback": fallback,
+    }
 
     if keyword_data and keyword_data.get("keyword_scores"):
         rules["keyword_scores"] = keyword_data["keyword_scores"]
+
+    # Print channel profiles summary
+    print("\n  Channel SIC Profiles (independent):")
+    for ch, profile in channel_profiles.items():
+        top_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_str = ", ".join(f"{s}({v:.0%})" for s, v in top_sics)
+        print(f"    {ch}: {len(profile)} SIC codes. Top 5: {top_str}")
 
     return rules
 
@@ -78,21 +96,25 @@ def predict_channel(
     company_name: str = "",
     name_weight: float = 0.3,
 ) -> str:
-    """Predict a single company's channel from SIC codes + name keywords.
+    """Score a company against each channel's profile independently.
 
-    The final score blends SIC-based weights and name-keyword scores:
-        score = (1 - name_weight) * sic_score + name_weight * keyword_score
+    SIC score per channel = sum of prevalence rates for matching SIC codes.
+    This is NOT a competition between channels - each channel is scored
+    on its own terms: "how well does this company match the builders
+    merchants profile?"
 
-    Name keywords are only used if ``keyword_scores`` were discovered from
-    the data and stored in the rules.  Otherwise, SIC-only.
+    Then blend with keyword scores and pick the best match.
     """
-    weights = rules["sic_weights"]
-    sic_scores: dict[str, float] = {}
+    profiles = rules["channel_profiles"]
 
-    for sic in sic_codes:
-        if sic in weights:
-            for ch, w in weights[sic].items():
-                sic_scores[ch] = sic_scores.get(ch, 0.0) + w
+    # Score against each channel independently
+    sic_scores: dict[str, float] = {}
+    for channel, profile in profiles.items():
+        score = 0.0
+        for sic in sic_codes:
+            if sic in profile:
+                score += profile[sic]
+        sic_scores[channel] = score
 
     # Name keyword scores - only if discovered from data
     kw_scores: dict[str, float] = {}
@@ -104,8 +126,7 @@ def predict_channel(
     if not all_channels:
         return rules["fallback"]
 
-    # If we have no keyword data, use SIC only
-    use_name = bool(kw_scores)
+    use_name = bool(kw_scores) and any(v > 0 for v in kw_scores.values())
     combined: dict[str, float] = {}
     for ch in all_channels:
         s = sic_scores.get(ch, 0.0)
