@@ -33,14 +33,19 @@ def build_rules(
     This tells us: "X% of builders merchants have SIC 46730".
     Each channel's profile is self-contained - it doesn't know about
     other channels.
+
+    At prediction time, a channel prior (proportion of total companies)
+    is applied so that smaller channels don't dominate larger ones.
     """
     numeric = matrix.drop(columns=["description"], errors="ignore")
 
     # Build independent profile per channel
     channel_profiles: dict[str, dict[str, float]] = {}
+    channel_totals: dict[str, float] = {}
     for channel in numeric.columns:
         col = numeric[channel]
         total = col.sum()
+        channel_totals[channel] = total
         if total == 0:
             channel_profiles[channel] = {}
             continue
@@ -51,6 +56,12 @@ def build_rules(
             if count > 0:
                 profile[sic] = count / total  # prevalence in THIS channel
         channel_profiles[channel] = profile
+
+    # Channel priors: proportion of all companies in each channel
+    grand_total = sum(channel_totals.values())
+    channel_priors: dict[str, float] = {}
+    for ch, t in channel_totals.items():
+        channel_priors[ch] = t / grand_total if grand_total > 0 else 0.0
 
     # Also store as sic_weights format for scorer compatibility
     # Convert from {channel: {sic: rate}} to {sic: {channel: rate}}
@@ -70,6 +81,7 @@ def build_rules(
     rules = {
         "sic_weights": sic_weights,
         "channel_profiles": channel_profiles,
+        "channel_priors": channel_priors,
         "fallback": fallback,
     }
 
@@ -81,7 +93,8 @@ def build_rules(
     for ch, profile in channel_profiles.items():
         top_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:5]
         top_str = ", ".join(f"{s}({v:.0%})" for s, v in top_sics)
-        print(f"    {ch}: {len(profile)} SIC codes. Top 5: {top_str}")
+        prior_pct = channel_priors[ch] * 100
+        print(f"    {ch} (prior {prior_pct:.1f}%): {len(profile)} SIC codes. Top 5: {top_str}")
 
     return rules
 
@@ -96,16 +109,17 @@ def predict_channel(
     company_name: str = "",
     name_weight: float = 0.3,
 ) -> str:
-    """Score a company against each channel's profile independently.
+    """Score a company against each channel's profile independently,
+    then weight by the channel prior so smaller channels don't dominate.
 
-    SIC score per channel = sum of prevalence rates for matching SIC codes.
-    This is NOT a competition between channels - each channel is scored
-    on its own terms: "how well does this company match the builders
-    merchants profile?"
+    final_score(ch) = prior(ch) * blended_score(ch)
 
-    Then blend with keyword scores and pick the best match.
+    The prior accounts for the fact that Plumbing Merchants (1039 companies)
+    should score higher than Department Stores (12 companies) when SIC codes
+    are shared between channels.
     """
     profiles = rules["channel_profiles"]
+    priors = rules.get("channel_priors", {})
 
     # Score against each channel independently
     sic_scores: dict[str, float] = {}
@@ -121,7 +135,7 @@ def predict_channel(
     if company_name and "keyword_scores" in rules:
         kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
 
-    # Blend
+    # Blend SIC + keyword scores
     all_channels = set(list(sic_scores.keys()) + list(kw_scores.keys()))
     if not all_channels:
         return rules["fallback"]
@@ -132,9 +146,13 @@ def predict_channel(
         s = sic_scores.get(ch, 0.0)
         if use_name:
             k = kw_scores.get(ch, 0.0)
-            combined[ch] = (1 - name_weight) * s + name_weight * k
+            blended = (1 - name_weight) * s + name_weight * k
         else:
-            combined[ch] = s
+            blended = s
+
+        # Apply channel prior so large channels aren't disadvantaged
+        prior = priors.get(ch, 1.0)
+        combined[ch] = prior * blended
 
     return max(combined, key=combined.get)
 
