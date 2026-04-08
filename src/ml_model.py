@@ -1,4 +1,4 @@
-"""ML-based channel classifier using SIC code features."""
+"""ML-based channel classifier using SIC code + name keyword features."""
 
 import json
 from pathlib import Path
@@ -19,22 +19,35 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import MultiLabelBinarizer
 
+from src.name_features import build_keyword_features
+
 
 # ------------------------------------------------------------------
 # Feature preparation
 # ------------------------------------------------------------------
 
-def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, MultiLabelBinarizer]:
-    """Filter to active companies and one-hot encode SIC codes.
+def prepare_features(
+    df: pd.DataFrame,
+    discovered_keywords: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.Series, MultiLabelBinarizer]:
+    """Filter to active companies and build SIC + data-driven keyword features.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Company data with sic_codes, company_status, channel, matched_name.
+    discovered_keywords : list[str], optional
+        Keywords discovered by ``name_features.discover_keywords()``.
+        If None, only SIC features are used.
 
     Returns
     -------
     X : pd.DataFrame
-        One-hot encoded SIC code features.
+        Combined SIC one-hot + name keyword one-hot features.
     y : pd.Series
         Channel labels.
     mlb : MultiLabelBinarizer
-        Fitted binarizer (needed for inference on new data).
+        Fitted SIC binarizer (needed for inference on new data).
     """
     # Filter to active companies only
     active = df[df["company_status"] == "active"].copy()
@@ -56,12 +69,23 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, MultiLa
     if active.empty:
         raise ValueError("No companies with SIC codes to train on.")
 
+    # --- SIC code features (one-hot) ---
     mlb = MultiLabelBinarizer()
-    X = pd.DataFrame(
+    X_sic = pd.DataFrame(
         mlb.fit_transform(active["sic_list"]),
-        columns=mlb.classes_,
+        columns=[f"sic_{c}" for c in mlb.classes_],
         index=active.index,
     )
+
+    # --- Name keyword features (data-driven, only if analysis provided them) ---
+    if discovered_keywords:
+        X_kw = build_keyword_features(active, keywords=discovered_keywords)
+        print(f"  Features: {X_sic.shape[1]} SIC codes + {X_kw.shape[1]} name keywords (from analysis)")
+        X = pd.concat([X_sic, X_kw], axis=1)
+    else:
+        print(f"  Features: {X_sic.shape[1]} SIC codes (no keyword analysis available)")
+        X = X_sic
+
     y = active["channel"]
 
     return X, y, mlb

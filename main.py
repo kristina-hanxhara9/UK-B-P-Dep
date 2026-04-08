@@ -28,6 +28,7 @@ from src.analysis import (
     generate_analysis_report,
     plot_sic_heatmap,
 )
+from src.name_features import discover_keywords, generate_keyword_report
 from src.rule_model import build_rules, evaluate_rule_model
 from src.ml_model import prepare_features, train_and_evaluate
 
@@ -77,10 +78,10 @@ def step_2_sic_mapping(df: pd.DataFrame) -> pd.DataFrame:
     return matrix
 
 
-def step_3_analysis(matrix: pd.DataFrame):
-    """Step 3: Analyse SIC code overlaps and uniqueness."""
+def step_3_analysis(df: pd.DataFrame, matrix: pd.DataFrame) -> dict:
+    """Step 3: Analyse SIC codes AND company name keywords."""
     print("\n" + "=" * 60)
-    print("STEP 3 — SIC Code Analysis")
+    print("STEP 3a — SIC Code Analysis")
     print("=" * 60)
 
     sic_sets = compute_channel_sic_sets(matrix)
@@ -91,28 +92,41 @@ def step_3_analysis(matrix: pd.DataFrame):
     except Exception as exc:
         print(f"  [WARN] Could not generate heatmap: {exc}")
 
-    return sic_sets
+    print("\n" + "=" * 60)
+    print("STEP 3b — Company Name Keyword Analysis")
+    print("=" * 60)
+
+    keyword_data = discover_keywords(df)
+    generate_keyword_report(keyword_data, config.OUTPUT_DIR / "keyword_analysis.txt")
+
+    return keyword_data
 
 
-def step_4_rule_model(df: pd.DataFrame, matrix: pd.DataFrame):
+def step_4_rule_model(
+    df: pd.DataFrame,
+    matrix: pd.DataFrame,
+    keyword_data: dict | None = None,
+):
     """Step 4: Build and evaluate the rule-based model."""
     print("\n" + "=" * 60)
     print("STEP 4 — Rule-Based Model")
     print("=" * 60)
 
-    rules = build_rules(matrix)
+    rules = build_rules(matrix, keyword_data=keyword_data)
     results = evaluate_rule_model(df, rules, config.OUTPUT_DIR / "rule_model_results.txt")
     return rules, results
 
 
-def step_5_ml_model(df: pd.DataFrame):
+def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
     """Step 5: Train and evaluate the ML model (active companies only)."""
     print("\n" + "=" * 60)
     print("STEP 5 — Machine Learning Model")
     print("=" * 60)
 
+    discovered_kws = keyword_data.get("all_keywords") if keyword_data else None
+
     try:
-        X, y, mlb = prepare_features(df)
+        X, y, mlb = prepare_features(df, discovered_keywords=discovered_kws)
         results = train_and_evaluate(X, y, config.OUTPUT_DIR)
         return results
     except ValueError as exc:
@@ -172,14 +186,18 @@ def main():
     else:
         matrix = step_2_sic_mapping(df)
 
+    # Step 3: analyse both SIC codes and name keywords
+    keyword_data = None
     if args.step in ("all", "3"):
-        step_3_analysis(matrix)
+        keyword_data = step_3_analysis(df, matrix)
 
+    # Step 4: rule model uses SIC weights + discovered keywords
     if args.step in ("all", "4"):
-        step_4_rule_model(df, matrix)
+        step_4_rule_model(df, matrix, keyword_data=keyword_data)
 
+    # Step 5: ML model uses SIC features + discovered keyword features
     if args.step in ("all", "5"):
-        step_5_ml_model(df)
+        step_5_ml_model(df, keyword_data=keyword_data)
 
     print("\n" + "=" * 60)
     print("DONE — Check data/output/ for all results")

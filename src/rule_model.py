@@ -1,4 +1,4 @@
-"""Rule-based channel classifier using SIC code weights."""
+"""Rule-based channel classifier using SIC code weights and data-driven name keywords."""
 
 import json
 from pathlib import Path
@@ -6,35 +6,40 @@ from pathlib import Path
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
 
-from src.analysis import unique_sic_codes, compute_channel_sic_sets
+from src.analysis import compute_channel_sic_sets
+from src.name_features import keyword_channel_scores
 
 
 # ------------------------------------------------------------------
 # Rule construction
 # ------------------------------------------------------------------
 
-def build_rules(matrix: pd.DataFrame) -> dict:
+def build_rules(
+    matrix: pd.DataFrame,
+    keyword_data: dict | None = None,
+) -> dict:
     """Derive classification rules from the SIC × channel matrix.
 
     Rules
     -----
     For each SIC code, compute a weight per channel:
         weight(sic, channel) = count(sic, channel) / total(sic)
-    This gives the probability that a company with this SIC code belongs
-    to each channel.
 
-    Returns a dict:  {sic_code: {channel: weight, ...}, ...}
-    plus a "fallback" key with the most common channel.
+    If *keyword_data* is provided (from ``discover_keywords()``), the
+    keyword scores are also stored in the rules for blending at prediction.
+
+    Returns a dict with keys:
+        sic_weights, fallback, keyword_scores (optional)
     """
     numeric = matrix.drop(columns=["description"], errors="ignore")
     row_totals = numeric.sum(axis=1)
 
-    rules: dict[str, dict[str, float]] = {}
+    sic_weights: dict[str, dict[str, float]] = {}
     for sic in numeric.index:
         total = row_totals[sic]
         if total == 0:
             continue
-        rules[sic] = {
+        sic_weights[sic] = {
             channel: float(numeric.loc[sic, channel] / total)
             for channel in numeric.columns
         }
@@ -42,36 +47,70 @@ def build_rules(matrix: pd.DataFrame) -> dict:
     # Fallback: channel with the most companies overall
     fallback = numeric.sum(axis=0).idxmax()
 
-    return {"sic_weights": rules, "fallback": fallback}
+    rules = {"sic_weights": sic_weights, "fallback": fallback}
+
+    if keyword_data and keyword_data.get("keyword_scores"):
+        rules["keyword_scores"] = keyword_data["keyword_scores"]
+
+    return rules
 
 
 # ------------------------------------------------------------------
 # Prediction
 # ------------------------------------------------------------------
 
-def predict_channel(sic_codes: list[str], rules: dict) -> str:
-    """Predict a single company's channel from its SIC codes."""
+def predict_channel(
+    sic_codes: list[str],
+    rules: dict,
+    company_name: str = "",
+    name_weight: float = 0.3,
+) -> str:
+    """Predict a single company's channel from SIC codes + name keywords.
+
+    The final score blends SIC-based weights and name-keyword scores:
+        score = (1 - name_weight) * sic_score + name_weight * keyword_score
+
+    Name keywords are only used if ``keyword_scores`` were discovered from
+    the data and stored in the rules.  Otherwise, SIC-only.
+    """
     weights = rules["sic_weights"]
-    channels = set()
-    scores: dict[str, float] = {}
+    sic_scores: dict[str, float] = {}
 
     for sic in sic_codes:
         if sic in weights:
             for ch, w in weights[sic].items():
-                channels.add(ch)
-                scores[ch] = scores.get(ch, 0.0) + w
+                sic_scores[ch] = sic_scores.get(ch, 0.0) + w
 
-    if not scores:
+    # Name keyword scores — only if discovered from data
+    kw_scores: dict[str, float] = {}
+    if company_name and "keyword_scores" in rules:
+        kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
+
+    # Blend
+    all_channels = set(list(sic_scores.keys()) + list(kw_scores.keys()))
+    if not all_channels:
         return rules["fallback"]
 
-    return max(scores, key=scores.get)
+    # If we have no keyword data, use SIC only
+    use_name = bool(kw_scores)
+    combined: dict[str, float] = {}
+    for ch in all_channels:
+        s = sic_scores.get(ch, 0.0)
+        if use_name:
+            k = kw_scores.get(ch, 0.0)
+            combined[ch] = (1 - name_weight) * s + name_weight * k
+        else:
+            combined[ch] = s
+
+    return max(combined, key=combined.get)
 
 
 def predict_all(df: pd.DataFrame, rules: dict) -> pd.Series:
     """Predict channels for all companies in the DataFrame."""
     def _predict_row(row):
         sic = json.loads(row["sic_codes"]) if isinstance(row["sic_codes"], str) else row["sic_codes"]
-        return predict_channel(sic, rules)
+        name = str(row.get("matched_name") or row.get("input_name") or "")
+        return predict_channel(sic, rules, company_name=name)
 
     return df.apply(_predict_row, axis=1)
 
@@ -98,16 +137,20 @@ def evaluate_rule_model(
     lines.append("=" * 80)
     lines.append("RULE-BASED MODEL EVALUATION")
     lines.append("=" * 80)
+    lines.append(f"\nFeatures used: SIC codes" + (
+        " + data-driven name keywords" if "keyword_scores" in rules else " (no name keywords)"
+    ))
     lines.append(f"\nAccuracy: {(y_true == y_pred).mean():.2%}")
     lines.append(f"\n{report}")
     lines.append("\nConfusion Matrix:")
     lines.append(f"Labels: {labels}")
     lines.append(str(cm))
 
-    # Show unique SIC rules
-    sic_sets = compute_channel_sic_sets(
-        pd.DataFrame(rules["sic_weights"]).T.fillna(0)
-    ) if rules["sic_weights"] else {}
+    if "keyword_scores" in rules:
+        lines.append("\nDiscovered keywords used in rules:")
+        for ch, scored in rules["keyword_scores"].items():
+            top_words = [w for w, _ in scored[:10]]
+            lines.append(f"  {ch}: {', '.join(top_words)}")
 
     result_text = "\n".join(lines)
     output_path.write_text(result_text)
