@@ -99,6 +99,7 @@ def train_and_evaluate(
     X: pd.DataFrame,
     y: pd.Series,
     output_dir: Path,
+    mlb: MultiLabelBinarizer | None = None,
     n_splits: int = 5,
 ) -> dict:
     """Train a Random Forest classifier with stratified cross-validation.

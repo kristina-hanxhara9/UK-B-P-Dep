@@ -123,7 +123,7 @@ def step_5_ml_model(df: pd.DataFrame, keyword_data: dict | None = None):
 
     try:
         X, y, mlb = prepare_features(df, discovered_keywords=discovered_kws)
-        results = train_and_evaluate(X, y, config.OUTPUT_DIR)
+        results = train_and_evaluate(X, y, config.OUTPUT_DIR, mlb=mlb)
         return results
     except ValueError as exc:
         print(f"  [ERROR] Cannot train ML model: {exc}")
