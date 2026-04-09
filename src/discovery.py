@@ -15,7 +15,7 @@ import pandas as pd
 
 from config import API_BASE_URL, EXCLUDED_SIC_CODES
 
-TOP_N = 4  # top 4 SIC codes and top 4 keywords per channel
+TOP_N = 3  # top 3 SIC codes and top 3 keywords per channel
 
 
 # ------------------------------------------------------------------

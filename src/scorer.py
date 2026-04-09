@@ -202,15 +202,15 @@ def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
 # Channel summary tables
 # ------------------------------------------------------------------
 
-def _build_all_sic_summary(rules: dict) -> pd.DataFrame:
-    """ALL SIC codes per channel from independent channel profiles, ranked by prevalence."""
+def _build_top3_sic_summary(rules: dict) -> pd.DataFrame:
+    """Top 3 SIC codes per channel from independent channel profiles."""
     rows: list[dict] = []
     profiles = rules.get("channel_profiles", {})
 
     for ch in sorted(profiles.keys()):
         profile = profiles[ch]
-        all_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)
-        for rank, (sic, prevalence) in enumerate(all_sics, 1):
+        top_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:3]
+        for rank, (sic, prevalence) in enumerate(top_sics, 1):
             rows.append({
                 "channel": ch,
                 "rank": rank,
@@ -222,14 +222,14 @@ def _build_all_sic_summary(rules: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_all_kw_summary(rules: dict) -> pd.DataFrame:
-    """ALL keywords per channel by chi2 score."""
+def _build_top3_kw_summary(rules: dict) -> pd.DataFrame:
+    """Top 3 keywords per channel by chi2 score."""
     rows: list[dict] = []
     if "keyword_scores" not in rules:
         return pd.DataFrame(columns=["channel", "rank", "keyword", "chi2_score"])
 
     for ch, scored in rules["keyword_scores"].items():
-        for rank, (word, score) in enumerate(scored, 1):
+        for rank, (word, score) in enumerate(scored[:3], 1):
             rows.append({
                 "channel": ch,
                 "rank": rank,
@@ -241,9 +241,9 @@ def _build_all_kw_summary(rules: dict) -> pd.DataFrame:
 
 
 def _build_combined_summary(rules: dict) -> pd.DataFrame:
-    """ALL SIC codes + ALL keywords side by side per channel."""
-    sic_summary = _build_all_sic_summary(rules)
-    kw_summary = _build_all_kw_summary(rules)
+    """Top 3 SIC codes + top 3 keywords side by side per channel."""
+    sic_summary = _build_top3_sic_summary(rules)
+    kw_summary = _build_top3_kw_summary(rules)
 
     channels = sorted(
         set(sic_summary["channel"].unique()) | set(kw_summary["channel"].unique())
@@ -319,13 +319,13 @@ def generate_output_excel(
         available_cols = [c for c in summary_cols if c in scored_df.columns]
         scored_df[available_cols].to_excel(writer, sheet_name="Summary (all)", index=False)
 
-        # All SIC codes per Channel
-        sic_summary = _build_all_sic_summary(rules)
-        sic_summary.to_excel(writer, sheet_name="All SIC per Channel", index=False)
+        # Top 3 SIC per Channel
+        sic_summary = _build_top3_sic_summary(rules)
+        sic_summary.to_excel(writer, sheet_name="Top 3 SIC per Channel", index=False)
 
-        # All Keywords per Channel
-        kw_summary = _build_all_kw_summary(rules)
-        kw_summary.to_excel(writer, sheet_name="All KW per Channel", index=False)
+        # Top 3 Keywords per Channel
+        kw_summary = _build_top3_kw_summary(rules)
+        kw_summary.to_excel(writer, sheet_name="Top 3 KW per Channel", index=False)
 
         # Combined SIC + Keywords side by side
         combined = _build_combined_summary(rules)
