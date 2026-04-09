@@ -202,15 +202,15 @@ def score_all_companies(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
 # Channel summary tables
 # ------------------------------------------------------------------
 
-def _build_top3_sic_summary(rules: dict) -> pd.DataFrame:
-    """Top 3 SIC codes per channel from independent channel profiles."""
+def _build_all_sic_summary(rules: dict) -> pd.DataFrame:
+    """ALL SIC codes per channel from independent channel profiles, ranked by prevalence."""
     rows: list[dict] = []
     profiles = rules.get("channel_profiles", {})
 
     for ch in sorted(profiles.keys()):
         profile = profiles[ch]
-        top_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:3]
-        for rank, (sic, prevalence) in enumerate(top_sics, 1):
+        all_sics = sorted(profile.items(), key=lambda x: x[1], reverse=True)
+        for rank, (sic, prevalence) in enumerate(all_sics, 1):
             rows.append({
                 "channel": ch,
                 "rank": rank,
@@ -222,14 +222,14 @@ def _build_top3_sic_summary(rules: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_top3_kw_summary(rules: dict) -> pd.DataFrame:
-    """Top 3 keywords per channel by chi2 score."""
+def _build_all_kw_summary(rules: dict) -> pd.DataFrame:
+    """ALL keywords per channel by chi2 score."""
     rows: list[dict] = []
     if "keyword_scores" not in rules:
         return pd.DataFrame(columns=["channel", "rank", "keyword", "chi2_score"])
 
     for ch, scored in rules["keyword_scores"].items():
-        for rank, (word, score) in enumerate(scored[:3], 1):
+        for rank, (word, score) in enumerate(scored, 1):
             rows.append({
                 "channel": ch,
                 "rank": rank,
@@ -241,9 +241,9 @@ def _build_top3_kw_summary(rules: dict) -> pd.DataFrame:
 
 
 def _build_combined_summary(rules: dict) -> pd.DataFrame:
-    """Top 3 SIC + top 3 keywords side by side per channel."""
-    sic_summary = _build_top3_sic_summary(rules)
-    kw_summary = _build_top3_kw_summary(rules)
+    """ALL SIC codes + ALL keywords side by side per channel."""
+    sic_summary = _build_all_sic_summary(rules)
+    kw_summary = _build_all_kw_summary(rules)
 
     channels = sorted(
         set(sic_summary["channel"].unique()) | set(kw_summary["channel"].unique())
@@ -253,8 +253,9 @@ def _build_combined_summary(rules: dict) -> pd.DataFrame:
     for ch in channels:
         sic_ch = sic_summary[sic_summary["channel"] == ch]
         kw_ch = kw_summary[kw_summary["channel"] == ch]
+        max_rank = max(len(sic_ch), len(kw_ch))
 
-        for rank in range(1, 4):
+        for rank in range(1, max_rank + 1):
             rec = {"channel": ch, "rank": rank}
 
             sic_row = sic_ch[sic_ch["rank"] == rank]
@@ -265,7 +266,7 @@ def _build_combined_summary(rules: dict) -> pd.DataFrame:
                 rec["sic_description"] = r["description"]
             else:
                 rec["sic_code"] = ""
-                rec["sic_weight"] = ""
+                rec["sic_prevalence"] = ""
                 rec["sic_description"] = ""
 
             kw_row = kw_ch[kw_ch["rank"] == rank]
@@ -318,15 +319,15 @@ def generate_output_excel(
         available_cols = [c for c in summary_cols if c in scored_df.columns]
         scored_df[available_cols].to_excel(writer, sheet_name="Summary (all)", index=False)
 
-        # Top 3 SIC per Channel
-        sic_summary = _build_top3_sic_summary(rules)
-        sic_summary.to_excel(writer, sheet_name="Top 3 SIC per Channel", index=False)
+        # All SIC codes per Channel
+        sic_summary = _build_all_sic_summary(rules)
+        sic_summary.to_excel(writer, sheet_name="All SIC per Channel", index=False)
 
-        # Top 3 Keywords per Channel
-        kw_summary = _build_top3_kw_summary(rules)
-        kw_summary.to_excel(writer, sheet_name="Top 3 KW per Channel", index=False)
+        # All Keywords per Channel
+        kw_summary = _build_all_kw_summary(rules)
+        kw_summary.to_excel(writer, sheet_name="All KW per Channel", index=False)
 
-        # Combined SIC + Keywords
+        # Combined SIC + Keywords side by side
         combined = _build_combined_summary(rules)
         combined.to_excel(writer, sheet_name="SIC + KW Combined", index=False)
 
