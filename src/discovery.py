@@ -193,13 +193,12 @@ def discover_new_companies(
         kw_set = set(w.lower() for w in top_kws)
 
         # Track per-channel to avoid duplicates within same channel
-        ch_sic_seen: set[str] = set(existing_company_numbers)
-        ch_kw_seen: set[str] = set(existing_company_numbers)
+        ch_seen: set[str] = set(existing_company_numbers)
 
         # --- SIC code searches ---
         print(f"\n  === {channel} - SIC Code Searches ===")
-        ch_sic_records: list[dict] = []
-        ch_combined_records: list[dict] = []
+        ch_sic_only: list[dict] = []       # SIC match, name has NO keyword
+        ch_combined: list[dict] = []        # SIC match + name HAS keyword
 
         for sic in top_sics:
             print(f"    SIC {sic} ...", end=" ", flush=True)
@@ -208,30 +207,29 @@ def discover_new_companies(
 
             for item in results:
                 co_num = item.get("company_number", "")
-                if not co_num or co_num in ch_sic_seen:
+                if not co_num or co_num in ch_seen:
                     continue
-                ch_sic_seen.add(co_num)
+                ch_seen.add(co_num)
                 new_count += 1
 
                 rec = _extract_record(item, channel, "sic", sic)
 
-                # Check if company name also contains a channel keyword
+                # Does the company name also contain a channel keyword?
                 name_lower = rec["matched_name"].lower()
                 matched_kws = [k for k in kw_set if k in name_lower]
 
                 if matched_kws:
-                    combo = rec.copy()
-                    combo["source_type"] = "combined"
-                    combo["source_value"] = f"SIC:{sic} + KW:{','.join(matched_kws)}"
-                    ch_combined_records.append(combo)
-
-                ch_sic_records.append(rec)
+                    rec["source_type"] = "combined"
+                    rec["source_value"] = f"SIC:{sic} + KW:{','.join(matched_kws)}"
+                    ch_combined.append(rec)
+                else:
+                    ch_sic_only.append(rec)
 
             print(f"{new_count} new (of {len(results)} total)")
 
-        # --- Keyword searches ---
+        # --- Keyword searches (finds companies NOT already found by SIC) ---
         print(f"\n  === {channel} - Keyword Searches ===")
-        ch_kw_records: list[dict] = []
+        ch_kw_only: list[dict] = []
 
         for kw in top_kws:
             print(f"    Keyword '{kw}' ...", end=" ", flush=True)
@@ -240,21 +238,23 @@ def discover_new_companies(
 
             for item in results:
                 co_num = item.get("company_number", "")
-                if not co_num or co_num in ch_kw_seen:
+                if not co_num or co_num in ch_seen:
                     continue
-                ch_kw_seen.add(co_num)
+                ch_seen.add(co_num)
                 new_count += 1
-                ch_kw_records.append(_extract_record(item, channel, "keyword", kw))
+                ch_kw_only.append(_extract_record(item, channel, "keyword", kw))
 
             print(f"{new_count} new (of {len(results)} total)")
 
         # --- Channel summary ---
-        print(f"\n  {channel} totals: SIC={len(ch_sic_records)}, "
-              f"Keyword={len(ch_kw_records)}, Combined={len(ch_combined_records)}")
+        print(f"\n  {channel} totals:")
+        print(f"    SIC-only:     {len(ch_sic_only)}")
+        print(f"    Keyword-only: {len(ch_kw_only)}")
+        print(f"    Combined:     {len(ch_combined)}")
 
-        sic_all_records.extend(ch_sic_records)
-        kw_all_records.extend(ch_kw_records)
-        combined_all_records.extend(ch_combined_records)
+        sic_all_records.extend(ch_sic_only)
+        kw_all_records.extend(ch_kw_only)
+        combined_all_records.extend(ch_combined)
 
     # ----------------------------------------------------------
     # 3. Build DataFrames and save CSVs
