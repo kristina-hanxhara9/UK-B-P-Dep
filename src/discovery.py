@@ -22,13 +22,13 @@ TOP_N = 4  # top 4 SIC codes and top 4 keywords per channel
 # API search helpers
 # ------------------------------------------------------------------
 
-def search_by_sic(client, sic_code: str, max_results: int = 5000) -> list[dict]:
+def search_by_sic(client, sic_code: str, max_results: int = 0) -> list[dict]:
     """Search Companies House for active companies with a specific SIC code."""
     results = []
     start_index = 0
     page_size = 100
 
-    while start_index < max_results:
+    while True:
         client._rate_limit()
         url = f"{API_BASE_URL}/advanced-search/companies"
         params = {
@@ -62,13 +62,13 @@ def search_by_sic(client, sic_code: str, max_results: int = 5000) -> list[dict]:
     return results
 
 
-def search_by_keyword(client, keyword: str, max_results: int = 500) -> list[dict]:
+def search_by_keyword(client, keyword: str, max_results: int = 0) -> list[dict]:
     """Search Companies House for active companies by name keyword."""
     results = []
     start_index = 0
     page_size = 100
 
-    while start_index < max_results:
+    while True:
         client._rate_limit()
         url = f"{API_BASE_URL}/search/companies"
         params = {
