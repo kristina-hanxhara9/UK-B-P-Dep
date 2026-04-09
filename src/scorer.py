@@ -37,7 +37,6 @@ def score_company(
     """Score a company against each channel's independent profile,
     weighted by channel prior so smaller channels don't dominate."""
     profiles = rules.get("channel_profiles", {})
-    priors = rules.get("channel_priors", {})
     sic_weights = rules["sic_weights"]
 
     # --- SIC evidence: score against each channel independently ---
@@ -78,7 +77,7 @@ def score_company(
 
     kw_top_channel = max(kw_scores, key=kw_scores.get) if kw_scores else None
 
-    # --- Blend and predict (with channel prior) ---
+    # --- Blend and predict ---
     has_sic = bool(sic_scores)
     has_kw = bool(kw_scores) and any(v > 0 for v in kw_scores.values())
     name_weight = 0.3
@@ -93,12 +92,9 @@ def score_company(
             s = sic_scores.get(ch, 0.0)
             k = kw_scores.get(ch, 0.0)
             if has_kw:
-                blended = (1 - name_weight) * s + name_weight * k
+                combined[ch] = (1 - name_weight) * s + name_weight * k
             else:
-                blended = s
-            # Apply channel prior so large channels aren't disadvantaged
-            prior = priors.get(ch, 1.0)
-            combined[ch] = prior * blended
+                combined[ch] = s
         predicted = max(combined, key=combined.get)
         combined_score = combined[predicted]
 

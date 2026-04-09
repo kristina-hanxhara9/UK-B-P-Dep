@@ -478,11 +478,19 @@ def main():
 
         if has_results:
             print("\n" + "=" * 60)
-            print("SCORING DISCOVERED COMPANIES")
+            print("WRITING DISCOVERED COMPANIES")
             print("=" * 60)
 
+            # Output columns (raw data, no scoring)
+            out_cols = [
+                "matched_name", "company_number", "company_status",
+                "company_type", "date_of_creation",
+                "sic_codes", "full_address", "postcode", "region",
+                "source_channel", "source_type", "source_value",
+            ]
+
             with pd.ExcelWriter(DISCOVERED_EXCEL, engine="openpyxl") as writer:
-                all_scored = []
+                all_records = []
 
                 for label, label_name in [
                     ("sic", "SIC Matches"),
@@ -491,39 +499,32 @@ def main():
                 ]:
                     disc_df = discovered.get(label, pd.DataFrame())
                     if disc_df.empty:
-                        print(f"\n  {label_name}: 0 companies")
+                        print(f"  {label_name}: 0 companies")
                         continue
 
-                    scored = score_all_companies(disc_df, rules)
-                    scored["match_type"] = label
-                    all_scored.append(scored)
+                    disc_df["match_type"] = label
+                    all_records.append(disc_df)
 
                     # Per-channel sheets for this match type
-                    channels = sorted(scored["predicted_channel"].unique())
+                    channels = sorted(disc_df["source_channel"].unique())
                     for ch in channels:
                         sheet_name = f"{label[:3]}_{ch}"[:31]
-                        subset = scored[scored["predicted_channel"] == ch]
-                        subset.to_excel(writer, sheet_name=sheet_name, index=False)
+                        subset = disc_df[disc_df["source_channel"] == ch]
+                        avail = [c for c in out_cols if c in subset.columns]
+                        subset[avail].to_excel(writer, sheet_name=sheet_name, index=False)
+                        print(f"    {sheet_name}: {len(subset)} companies")
 
-                    print(f"\n  {label_name}: {len(scored)} companies")
-                    print(f"    Channels: {scored['predicted_channel'].value_counts().to_string()}")
-                    print(f"    Confidence: {scored['confidence'].value_counts().to_string()}")
+                    print(f"  {label_name}: {len(disc_df)} total")
 
                 # Summary sheet with ALL discovered companies
-                if all_scored:
-                    summary = pd.concat(all_scored, ignore_index=True)
-                    summary_cols = [
-                        "matched_name", "company_number", "predicted_channel",
-                        "confidence", "match_type",
-                        "sic_1_code", "sic_1_description",
-                        "keyword_1", "keyword_2", "keyword_3",
-                    ]
+                if all_records:
+                    summary = pd.concat(all_records, ignore_index=True)
+                    summary_cols = out_cols + ["match_type"]
                     avail = [c for c in summary_cols if c in summary.columns]
                     summary[avail].to_excel(writer, sheet_name="All Discovered", index=False)
-
                     print(f"\n  TOTAL discovered: {len(summary)}")
 
-            print(f"\n  Saved -> {DISCOVERED_EXCEL}")
+            print(f"  Saved -> {DISCOVERED_EXCEL}")
 
     elif args.step == "6" and not rules:
         print("\n  [ERROR] Rules required for discovery. Run steps 2-4 first.")

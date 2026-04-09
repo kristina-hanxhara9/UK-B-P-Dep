@@ -119,7 +119,6 @@ def predict_channel(
     are shared between channels.
     """
     profiles = rules["channel_profiles"]
-    priors = rules.get("channel_priors", {})
 
     # Score against each channel independently
     sic_scores: dict[str, float] = {}
@@ -135,7 +134,7 @@ def predict_channel(
     if company_name and "keyword_scores" in rules:
         kw_scores = keyword_channel_scores(company_name, rules["keyword_scores"])
 
-    # Blend SIC + keyword scores
+    # Blend
     all_channels = set(list(sic_scores.keys()) + list(kw_scores.keys()))
     if not all_channels:
         return rules["fallback"]
@@ -146,13 +145,9 @@ def predict_channel(
         s = sic_scores.get(ch, 0.0)
         if use_name:
             k = kw_scores.get(ch, 0.0)
-            blended = (1 - name_weight) * s + name_weight * k
+            combined[ch] = (1 - name_weight) * s + name_weight * k
         else:
-            blended = s
-
-        # Apply channel prior so large channels aren't disadvantaged
-        prior = priors.get(ch, 1.0)
-        combined[ch] = prior * blended
+            combined[ch] = s
 
     return max(combined, key=combined.get)
 
