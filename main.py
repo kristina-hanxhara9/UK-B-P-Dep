@@ -484,7 +484,7 @@ def main():
             # Output columns (raw data, no scoring)
             out_cols = [
                 "matched_name", "company_number", "company_status",
-                "company_type", "date_of_creation",
+                "company_type", "business_type", "date_of_creation",
                 "sic_codes", "full_address", "postcode", "region",
                 "source_channel", "source_type", "source_value",
             ]

@@ -105,6 +105,43 @@ def search_by_keyword(client, keyword: str, max_results: int = 0) -> list[dict]:
 
 
 # ------------------------------------------------------------------
+# Business type classification (Chain / Buying Group / Independent)
+# ------------------------------------------------------------------
+
+_BUYING_GROUP_KEYWORDS = {
+    "buying group", "consortium", "cooperative", "co-operative",
+    "alliance", "federation", "association", "society",
+    "buying society", "buying club", "purchasing group",
+}
+
+_CHAIN_KEYWORDS = {
+    "holdings", "international", "nationwide", "national",
+}
+
+_CHAIN_COMPANY_TYPES = {"plc", "public-limited-company"}
+
+
+def classify_business_type(name: str, company_type: str) -> str:
+    """Classify a company as Chain, Buying Group, or Independent."""
+    name_lower = name.lower()
+    co_type = (company_type or "").lower()
+
+    # Buying group check first (most specific)
+    for kw in _BUYING_GROUP_KEYWORDS:
+        if kw in name_lower:
+            return "Buying Group"
+
+    # Chain indicators
+    if co_type in _CHAIN_COMPANY_TYPES:
+        return "Chain"
+    for kw in _CHAIN_KEYWORDS:
+        if kw in name_lower:
+            return "Chain"
+
+    return "Independent"
+
+
+# ------------------------------------------------------------------
 # Extract company record from API item
 # ------------------------------------------------------------------
 
@@ -122,12 +159,17 @@ def _extract_record(item: dict, source_channel: str, source_type: str, source_va
     sic_codes = item.get("sic_codes", []) or []
     sic_codes = [s for s in sic_codes if s not in EXCLUDED_SIC_CODES]
 
+    company_name = item.get("company_name", item.get("title", ""))
+    company_type = item.get("company_type", "")
+    business_type = classify_business_type(company_name, company_type)
+
     return {
-        "matched_name": item.get("company_name", item.get("title", "")),
+        "matched_name": company_name,
         "company_number": item.get("company_number", ""),
         "sic_codes": json.dumps(sic_codes),
         "company_status": item.get("company_status", "active"),
-        "company_type": item.get("company_type", ""),
+        "company_type": company_type,
+        "business_type": business_type,
         "date_of_creation": item.get("date_of_creation", ""),
         "full_address": full_address,
         "postcode": addr.get("postal_code", ""),
