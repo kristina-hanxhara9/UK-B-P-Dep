@@ -210,7 +210,7 @@ def discover_new_companies(
 
     for channel, profile in profiles.items():
         sics = sorted(profile.keys(), key=lambda s: profile[s], reverse=True)
-        sics = [s for s in sics if s not in EXCLUDED_SIC_CODES][:TOP_N]
+        sics = [str(s) for s in sics if str(s) not in EXCLUDED_SIC_CODES][:TOP_N]
         channel_top_sics[channel] = sics
 
         kws = keyword_scores.get(channel, [])
