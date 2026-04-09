@@ -1,14 +1,14 @@
 """Discover NEW companies from Companies House based on learned channel profiles.
 
-Uses top 4 SIC codes and top 4 keywords per channel to find new companies.
-Results are categorised as:
-  - SIC matches     : found via SIC code search
-  - Keyword matches : found via company name keyword search
-  - Combined        : found by BOTH SIC and keyword (highest confidence)
+For each channel, uses its top 4 SIC codes and top 4 keywords to pull
+new companies. Results are organised into three sheets per channel:
+  - SIC sheet     : companies found searching by SIC codes
+  - Keyword sheet : companies found searching by keywords
+  - Combined sheet: companies found searching by SIC codes FILTERED
+                    to only those whose name also contains a channel keyword
 """
 
 import json
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -22,11 +22,8 @@ TOP_N = 4  # top 4 SIC codes and top 4 keywords per channel
 # API search helpers
 # ------------------------------------------------------------------
 
-def search_by_sic(client, sic_code: str, max_results: int = 500) -> list[dict]:
-    """Search Companies House for active companies with a specific SIC code.
-
-    Uses the /advanced-search/companies endpoint.
-    """
+def search_by_sic(client, sic_code: str, max_results: int = 5000) -> list[dict]:
+    """Search Companies House for active companies with a specific SIC code."""
     results = []
     start_index = 0
     page_size = 100
@@ -43,10 +40,12 @@ def search_by_sic(client, sic_code: str, max_results: int = 500) -> list[dict]:
 
         try:
             resp = client.session.get(url, params=params)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                print(f"\n      [WARN] SIC {sic_code} returned HTTP {resp.status_code}")
+                break
             data = resp.json()
         except Exception as exc:
-            print(f"    [ERROR] Search SIC {sic_code} at offset {start_index}: {exc}")
+            print(f"\n      [ERROR] SIC {sic_code}: {exc}")
             break
 
         items = data.get("items", [])
@@ -63,14 +62,11 @@ def search_by_sic(client, sic_code: str, max_results: int = 500) -> list[dict]:
     return results
 
 
-def search_by_keyword(client, keyword: str, max_results: int = 100) -> list[dict]:
-    """Search Companies House for active companies matching a name keyword.
-
-    Uses the /search/companies endpoint.
-    """
+def search_by_keyword(client, keyword: str, max_results: int = 500) -> list[dict]:
+    """Search Companies House for active companies by name keyword."""
     results = []
     start_index = 0
-    page_size = 50
+    page_size = 100
 
     while start_index < max_results:
         client._rate_limit()
@@ -83,10 +79,12 @@ def search_by_keyword(client, keyword: str, max_results: int = 100) -> list[dict
 
         try:
             resp = client.session.get(url, params=params)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                print(f"\n      [WARN] Keyword '{keyword}' returned HTTP {resp.status_code}")
+                break
             data = resp.json()
         except Exception as exc:
-            print(f"    [ERROR] Search keyword '{keyword}' at offset {start_index}: {exc}")
+            print(f"\n      [ERROR] Keyword '{keyword}': {exc}")
             break
 
         items = data.get("items", [])
@@ -110,8 +108,8 @@ def search_by_keyword(client, keyword: str, max_results: int = 100) -> list[dict
 # Extract company record from API item
 # ------------------------------------------------------------------
 
-def _extract_company(item: dict, source_type: str, source_value: str, source_channel: str) -> dict:
-    """Convert an API search result item into a flat record."""
+def _extract_record(item: dict, source_channel: str, source_type: str, source_value: str) -> dict:
+    """Convert an API result into a flat row."""
     addr = item.get("registered_office_address", {}) or {}
     address_parts = [
         addr.get("address_line_1", ""),
@@ -125,7 +123,6 @@ def _extract_company(item: dict, source_type: str, source_value: str, source_cha
     sic_codes = [s for s in sic_codes if s not in EXCLUDED_SIC_CODES]
 
     return {
-        "input_name": "",
         "matched_name": item.get("company_name", item.get("title", "")),
         "company_number": item.get("company_number", ""),
         "sic_codes": json.dumps(sic_codes),
@@ -135,16 +132,14 @@ def _extract_company(item: dict, source_type: str, source_value: str, source_cha
         "full_address": full_address,
         "postcode": addr.get("postal_code", ""),
         "region": addr.get("region", ""),
-        "country": addr.get("country", ""),
-        "channel": "",
-        "source_type": source_type,      # "sic", "keyword", or "combined"
-        "source_value": source_value,     # the SIC code or keyword used
-        "source_channel": source_channel, # which channel profile it came from
+        "source_channel": source_channel,
+        "source_type": source_type,
+        "source_value": source_value,
     }
 
 
 # ------------------------------------------------------------------
-# Main discovery function
+# Main discovery
 # ------------------------------------------------------------------
 
 def discover_new_companies(
@@ -152,160 +147,133 @@ def discover_new_companies(
     rules: dict,
     existing_company_numbers: set[str],
     output_path: Path,
-    max_per_sic: int = 500,
-    max_per_keyword: int = 100,
 ) -> dict[str, pd.DataFrame]:
-    """Search Companies House for new companies using top 4 SIC codes
-    and top 4 keywords per channel.
+    """For each channel, search by top 4 SIC codes and top 4 keywords.
 
-    Returns a dict with three DataFrames:
-      - "sic"      : companies found via SIC code search only
-      - "keyword"  : companies found via keyword search only
-      - "combined" : companies found by BOTH SIC and keyword searches
-
-    Parameters
-    ----------
-    client : CompaniesHouseClient
-    rules : dict
-        Must contain 'channel_profiles' and optionally 'keyword_scores'.
-    existing_company_numbers : set[str]
-        Company numbers already in the input Excel (to exclude).
-    output_path : Path
-        Base path for saving CSVs (will create _sic.csv, _keyword.csv, _combined.csv).
-    max_per_sic : int
-        Max results per SIC code search.
-    max_per_keyword : int
-        Max results per keyword search.
+    Returns dict with three DataFrames: 'sic', 'keyword', 'combined'.
+    Each channel's results are independent (no cross-channel dedup).
     """
     profiles = rules.get("channel_profiles", {})
     keyword_scores = rules.get("keyword_scores", {})
 
     if not profiles:
-        print("  [ERROR] No channel profiles found in rules.")
+        print("  [ERROR] No channel profiles in rules.")
         return {"sic": pd.DataFrame(), "keyword": pd.DataFrame(), "combined": pd.DataFrame()}
 
     # ----------------------------------------------------------
-    # 1. Collect top 4 SIC codes and top 4 keywords per channel
+    # 1. Get top 4 SIC codes + top 4 keywords per channel
     # ----------------------------------------------------------
     channel_top_sics: dict[str, list[str]] = {}
     channel_top_kws: dict[str, list[str]] = {}
 
     for channel, profile in profiles.items():
-        # Top 4 SIC codes by prevalence
         sics = sorted(profile.keys(), key=lambda s: profile[s], reverse=True)
         sics = [s for s in sics if s not in EXCLUDED_SIC_CODES][:TOP_N]
         channel_top_sics[channel] = sics
 
-        # Top 4 keywords by chi2 score
         kws = keyword_scores.get(channel, [])
         channel_top_kws[channel] = [w for w, _ in kws[:TOP_N]]
 
     print("\n  Discovery profile per channel:")
     for ch in profiles:
-        sics_str = ", ".join(channel_top_sics.get(ch, []))
-        kws_str = ", ".join(channel_top_kws.get(ch, []))
         print(f"    {ch}:")
-        print(f"      Top {TOP_N} SIC codes: {sics_str}")
-        print(f"      Top {TOP_N} keywords:  {kws_str}")
+        print(f"      Top {TOP_N} SIC codes: {', '.join(channel_top_sics.get(ch, []))}")
+        print(f"      Top {TOP_N} keywords:  {', '.join(channel_top_kws.get(ch, []))}")
+
+    sic_all_records: list[dict] = []
+    kw_all_records: list[dict] = []
+    combined_all_records: list[dict] = []
 
     # ----------------------------------------------------------
-    # 2. Search by SIC codes
+    # 2. For EACH channel independently
     # ----------------------------------------------------------
-    seen_numbers: set[str] = set(existing_company_numbers)
-    sic_found: dict[str, dict] = {}   # company_number -> record
+    for channel in profiles:
+        top_sics = channel_top_sics[channel]
+        top_kws = channel_top_kws[channel]
+        kw_set = set(w.lower() for w in top_kws)
 
-    print("\n  --- SIC Code Searches ---")
-    for channel, sics in channel_top_sics.items():
-        print(f"\n  {channel}:")
-        for sic in sics:
-            print(f"    SIC {sic} ...", end=" ")
-            results = search_by_sic(client, sic, max_results=max_per_sic)
+        # Track per-channel to avoid duplicates within same channel
+        ch_sic_seen: set[str] = set(existing_company_numbers)
+        ch_kw_seen: set[str] = set(existing_company_numbers)
+
+        # --- SIC code searches ---
+        print(f"\n  === {channel} - SIC Code Searches ===")
+        ch_sic_records: list[dict] = []
+        ch_combined_records: list[dict] = []
+
+        for sic in top_sics:
+            print(f"    SIC {sic} ...", end=" ", flush=True)
+            results = search_by_sic(client, sic)
             new_count = 0
 
             for item in results:
                 co_num = item.get("company_number", "")
-                if not co_num or co_num in seen_numbers:
+                if not co_num or co_num in ch_sic_seen:
                     continue
-
-                seen_numbers.add(co_num)
+                ch_sic_seen.add(co_num)
                 new_count += 1
-                sic_found[co_num] = _extract_company(item, "sic", sic, channel)
+
+                rec = _extract_record(item, channel, "sic", sic)
+
+                # Check if company name also contains a channel keyword
+                name_lower = rec["matched_name"].lower()
+                matched_kws = [k for k in kw_set if k in name_lower]
+
+                if matched_kws:
+                    combo = rec.copy()
+                    combo["source_type"] = "combined"
+                    combo["source_value"] = f"SIC:{sic} + KW:{','.join(matched_kws)}"
+                    ch_combined_records.append(combo)
+
+                ch_sic_records.append(rec)
 
             print(f"{new_count} new (of {len(results)} total)")
 
-    # ----------------------------------------------------------
-    # 3. Search by keywords
-    # ----------------------------------------------------------
-    # Reset seen so keyword search can find companies also found by SIC
-    kw_seen: set[str] = set(existing_company_numbers)
-    kw_found: dict[str, dict] = {}   # company_number -> record
+        # --- Keyword searches ---
+        print(f"\n  === {channel} - Keyword Searches ===")
+        ch_kw_records: list[dict] = []
 
-    print("\n  --- Keyword Searches ---")
-    for channel, kws in channel_top_kws.items():
-        if not kws:
-            print(f"\n  {channel}: no keywords discovered, skipping")
-            continue
-
-        print(f"\n  {channel}:")
-        for kw in kws:
-            print(f"    Keyword '{kw}' ...", end=" ")
-            results = search_by_keyword(client, kw, max_results=max_per_keyword)
+        for kw in top_kws:
+            print(f"    Keyword '{kw}' ...", end=" ", flush=True)
+            results = search_by_keyword(client, kw)
             new_count = 0
 
             for item in results:
                 co_num = item.get("company_number", "")
-                if not co_num or co_num in kw_seen:
+                if not co_num or co_num in ch_kw_seen:
                     continue
-
-                kw_seen.add(co_num)
+                ch_kw_seen.add(co_num)
                 new_count += 1
-                kw_found[co_num] = _extract_company(item, "keyword", kw, channel)
+                ch_kw_records.append(_extract_record(item, channel, "keyword", kw))
 
             print(f"{new_count} new (of {len(results)} total)")
 
-    # ----------------------------------------------------------
-    # 4. Categorise: SIC-only, keyword-only, combined (both)
-    # ----------------------------------------------------------
-    sic_numbers = set(sic_found.keys())
-    kw_numbers = set(kw_found.keys())
-    combined_numbers = sic_numbers & kw_numbers
-    sic_only_numbers = sic_numbers - combined_numbers
-    kw_only_numbers = kw_numbers - combined_numbers
+        # --- Channel summary ---
+        print(f"\n  {channel} totals: SIC={len(ch_sic_records)}, "
+              f"Keyword={len(ch_kw_records)}, Combined={len(ch_combined_records)}")
 
-    # Build combined records (merge info from both searches)
-    combined_records = []
-    for co_num in combined_numbers:
-        rec = sic_found[co_num].copy()
-        rec["source_type"] = "combined"
-        # Note both the SIC and keyword that matched
-        kw_rec = kw_found[co_num]
-        rec["source_value"] = f"SIC:{rec['source_value']} + KW:{kw_rec['source_value']}"
-        combined_records.append(rec)
-
-    sic_only_records = [sic_found[n] for n in sic_only_numbers]
-    kw_only_records = [kw_found[n] for n in kw_only_numbers]
+        sic_all_records.extend(ch_sic_records)
+        kw_all_records.extend(ch_kw_records)
+        combined_all_records.extend(ch_combined_records)
 
     # ----------------------------------------------------------
-    # 5. Build DataFrames and save
+    # 3. Build DataFrames and save CSVs
     # ----------------------------------------------------------
-    dfs = {}
+    dfs: dict[str, pd.DataFrame] = {}
     base = output_path.parent / output_path.stem
 
-    for label, records in [("sic", sic_only_records), ("keyword", kw_only_records), ("combined", combined_records)]:
+    for label, records in [("sic", sic_all_records), ("keyword", kw_all_records), ("combined", combined_all_records)]:
         if records:
-            df = pd.DataFrame(records)
+            frame = pd.DataFrame(records)
             csv_path = Path(f"{base}_{label}.csv")
-            df.to_csv(csv_path, index=False)
-            dfs[label] = df
-            print(f"\n  {label.upper()} matches: {len(df)} companies -> {csv_path}")
+            frame.to_csv(csv_path, index=False)
+            dfs[label] = frame
+            print(f"\n  {label.upper()}: {len(frame)} companies -> {csv_path}")
         else:
             dfs[label] = pd.DataFrame()
-            print(f"\n  {label.upper()} matches: 0 companies")
+            print(f"\n  {label.upper()}: 0 companies")
 
-    total = len(sic_only_records) + len(kw_only_records) + len(combined_records)
-    print(f"\n  Total new companies discovered: {total}")
-    print(f"    SIC-only:     {len(sic_only_records)}")
-    print(f"    Keyword-only: {len(kw_only_records)}")
-    print(f"    Combined:     {len(combined_records)}")
+    grand_total = len(sic_all_records) + len(kw_all_records) + len(combined_all_records)
+    print(f"\n  GRAND TOTAL: {grand_total} records")
 
     return dfs
