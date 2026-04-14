@@ -45,6 +45,7 @@ SIC_MATRIX_CSV = config.PROCESSED_DIR / "sic_channel_matrix.csv"
 DISCOVERED_CSV = config.PROCESSED_DIR / "discovered_companies.csv"
 RESULTS_EXCEL = config.OUTPUT_DIR / "results.xlsx"
 DISCOVERED_EXCEL = config.OUTPUT_DIR / "discovered_companies.xlsx"
+MERGED_EXCEL = config.OUTPUT_DIR / "all_companies_merged.xlsx"
 
 
 import json as _json
@@ -530,12 +531,96 @@ def main():
         print("\n  [ERROR] Rules required for discovery. Run steps 2-4 first.")
 
     # ----------------------------------------------------------
+    # Merge input + discovered, dedup by company_number
+    # ----------------------------------------------------------
+    has_discovered = discovered and any(
+        not v.empty for v in discovered.values() if isinstance(v, pd.DataFrame)
+    )
+    if rules and has_discovered:
+        print("\n" + "=" * 60)
+        print("MERGING INPUT + DISCOVERED (deduped)")
+        print("=" * 60)
+
+        # Input companies (scored)
+        scored_df = score_all_companies(df, rules)
+        scored_df["source"] = "input"
+        scored_df["source_channel"] = scored_df["actual_channel"]
+
+        # All discovered companies
+        disc_frames = []
+        for label in ("sic", "keyword", "combined"):
+            disc_df = discovered.get(label, pd.DataFrame())
+            if not disc_df.empty:
+                disc_frames.append(disc_df)
+
+        if disc_frames:
+            all_disc = pd.concat(disc_frames, ignore_index=True)
+            all_disc["source"] = "discovered"
+
+            # Align columns: use the common set
+            shared_cols = [
+                "matched_name", "company_number", "company_status",
+                "company_type", "date_of_creation",
+                "sic_codes", "full_address", "postcode", "region",
+                "source_channel", "source",
+            ]
+            # Add business_type if present
+            if "business_type" in all_disc.columns:
+                shared_cols.insert(4, "business_type")
+
+            input_aligned = scored_df.rename(columns={"predicted_channel": "channel"})
+            input_aligned["channel"] = scored_df.get("actual_channel", scored_df.get("predicted_channel", ""))
+            input_part = pd.DataFrame()
+            for c in shared_cols:
+                if c in input_aligned.columns:
+                    input_part[c] = input_aligned[c]
+                elif c in scored_df.columns:
+                    input_part[c] = scored_df[c]
+                else:
+                    input_part[c] = ""
+
+            disc_part = pd.DataFrame()
+            for c in shared_cols:
+                if c in all_disc.columns:
+                    disc_part[c] = all_disc[c]
+                else:
+                    disc_part[c] = ""
+
+            merged = pd.concat([input_part, disc_part], ignore_index=True)
+
+            # Dedup by company_number, keep first (input takes priority)
+            before = len(merged)
+            merged = merged.drop_duplicates(subset="company_number", keep="first")
+            dupes = before - len(merged)
+
+            print(f"  Input companies: {len(input_part)}")
+            print(f"  Discovered companies: {len(disc_part)}")
+            print(f"  Duplicates removed: {dupes}")
+            print(f"  Merged total: {len(merged)}")
+
+            # Write merged Excel with per-channel sheets
+            with pd.ExcelWriter(MERGED_EXCEL, engine="openpyxl") as writer:
+                channels = sorted(merged["source_channel"].dropna().unique())
+                for ch in channels:
+                    if not ch:
+                        continue
+                    subset = merged[merged["source_channel"] == ch]
+                    sheet_name = ch[:31]
+                    subset.to_excel(writer, sheet_name=sheet_name, index=False)
+                    print(f"    {ch}: {len(subset)} companies")
+
+                merged.to_excel(writer, sheet_name="All Companies", index=False)
+
+            print(f"  Saved -> {MERGED_EXCEL}")
+
+    # ----------------------------------------------------------
     # Summary
     # ----------------------------------------------------------
     print("\n" + "=" * 60)
     output_files = [str(RESULTS_EXCEL)]
-    if discovered and any(not v.empty for v in discovered.values() if isinstance(v, pd.DataFrame)):
+    if has_discovered:
         output_files.append(str(DISCOVERED_EXCEL))
+        output_files.append(str(MERGED_EXCEL))
     print("DONE - Output files:")
     for f in output_files:
         print(f"  {f}")
