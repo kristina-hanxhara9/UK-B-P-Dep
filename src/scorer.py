@@ -77,10 +77,11 @@ def score_company(
 
     kw_top_channel = max(kw_scores, key=kw_scores.get) if kw_scores else None
 
-    # --- Blend and predict ---
+    # --- Blend and predict (with channel prior) ---
     has_sic = bool(sic_scores)
     has_kw = bool(kw_scores) and any(v > 0 for v in kw_scores.values())
     name_weight = 0.3
+    priors = rules.get("channel_priors", {})
 
     all_channels = set(list(sic_scores.keys()) + list(kw_scores.keys()))
     if not all_channels:
@@ -92,9 +93,10 @@ def score_company(
             s = sic_scores.get(ch, 0.0)
             k = kw_scores.get(ch, 0.0)
             if has_kw:
-                combined[ch] = (1 - name_weight) * s + name_weight * k
+                blended = (1 - name_weight) * s + name_weight * k
             else:
-                combined[ch] = s
+                blended = s
+            combined[ch] = priors.get(ch, 1.0) * blended
         predicted = max(combined, key=combined.get)
         combined_score = combined[predicted]
 
