@@ -46,6 +46,7 @@ DISCOVERED_CSV = config.PROCESSED_DIR / "discovered_companies.csv"
 RESULTS_EXCEL = config.OUTPUT_DIR / "results.xlsx"
 DISCOVERED_EXCEL = config.OUTPUT_DIR / "discovered_companies.xlsx"
 MERGED_EXCEL = config.OUTPUT_DIR / "all_companies_merged.xlsx"
+ANALYSIS_EXCEL = config.OUTPUT_DIR / "analysis_overview.xlsx"
 
 
 import json as _json
@@ -342,6 +343,101 @@ def build_model_sheets(rule_results: dict, ml_results: dict | None) -> dict[str,
     return sheets
 
 
+def build_overview_sheet(df: pd.DataFrame, rules: dict, rule_results: dict | None, ml_results: dict | None) -> pd.DataFrame:
+    """Build a high-level overview of the analysis."""
+    rows = []
+
+    # Dataset summary
+    rows.append({"section": "DATASET", "metric": "Total companies (active)", "value": len(df)})
+    for ch in sorted(df["channel"].unique()):
+        count = (df["channel"] == ch).sum()
+        rows.append({"section": "DATASET", "metric": f"  {ch}", "value": count})
+
+    # Channel profiles
+    profiles = rules.get("channel_profiles", {})
+    priors = rules.get("channel_priors", {})
+    for ch in sorted(profiles.keys()):
+        profile = profiles[ch]
+        rows.append({"section": "PROFILES", "metric": f"{ch} - SIC codes", "value": len(profile)})
+        rows.append({"section": "PROFILES", "metric": f"{ch} - prior", "value": f"{priors.get(ch, 0):.1%}"})
+
+    # Top 3 SIC per channel
+    for ch in sorted(profiles.keys()):
+        profile = profiles[ch]
+        top = sorted(profile.items(), key=lambda x: x[1], reverse=True)[:3]
+        for rank, (sic, prev) in enumerate(top, 1):
+            desc = SIC_DESCRIPTIONS.get(str(sic), "")
+            rows.append({
+                "section": f"TOP 3 SIC - {ch}",
+                "metric": f"  #{rank}: {sic} ({prev:.0%})",
+                "value": desc,
+            })
+
+    # Top 3 keywords per channel
+    kw_scores = rules.get("keyword_scores", {})
+    for ch in sorted(kw_scores.keys()):
+        scored = kw_scores[ch]
+        for rank, (word, score) in enumerate(scored[:3], 1):
+            rows.append({
+                "section": f"TOP 3 KW - {ch}",
+                "metric": f"  #{rank}: {word}",
+                "value": f"chi2={score:.2f}",
+            })
+
+    # Rule model accuracy
+    if rule_results:
+        acc = rule_results.get("accuracy", 0)
+        rows.append({"section": "RULE MODEL", "metric": "Accuracy", "value": f"{acc:.1%}"})
+
+    # ML model accuracy
+    if ml_results:
+        cv = ml_results.get("cv_results", {})
+        if "test_accuracy" in cv:
+            mean_acc = cv["test_accuracy"].mean()
+            rows.append({"section": "ML MODEL", "metric": "CV Accuracy (mean)", "value": f"{mean_acc:.1%}"})
+
+    return pd.DataFrame(rows)
+
+
+def write_analysis_excel(
+    df: pd.DataFrame,
+    rules: dict,
+    extra_sheets: dict[str, pd.DataFrame],
+    rule_results: dict | None,
+    ml_results: dict | None,
+    output_path,
+):
+    """Write a dedicated analysis/overview Excel file."""
+    from src.scorer import _build_top3_sic_summary, _build_top3_kw_summary, _build_combined_summary
+
+    print("\n" + "=" * 60)
+    print("GENERATING ANALYSIS OVERVIEW EXCEL")
+    print("=" * 60)
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        # 1. Overview
+        overview = build_overview_sheet(df, rules, rule_results, ml_results)
+        overview.to_excel(writer, sheet_name="Overview", index=False)
+
+        # 2. Top 3 SIC per Channel
+        sic_summary = _build_top3_sic_summary(rules)
+        sic_summary.to_excel(writer, sheet_name="Top 3 SIC per Channel", index=False)
+
+        # 3. Top 3 Keywords per Channel
+        kw_summary = _build_top3_kw_summary(rules)
+        kw_summary.to_excel(writer, sheet_name="Top 3 KW per Channel", index=False)
+
+        # 4. SIC + KW Combined
+        combined = _build_combined_summary(rules)
+        combined.to_excel(writer, sheet_name="SIC + KW Combined", index=False)
+
+        # 5. All extra sheets (SIC Distribution, Overlap, Keyword Analysis, Model Results)
+        for name, sheet_df in extra_sheets.items():
+            sheet_df.to_excel(writer, sheet_name=name[:31], index=False)
+
+    print(f"  Saved -> {output_path}")
+
+
 # ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
@@ -458,6 +554,9 @@ def main():
             print(f"    {ch}: {ch_correct}/{ch_total} ({ch_correct/ch_total:.0%})")
 
         generate_output_excel(scored_df, rules, RESULTS_EXCEL, extra_sheets=extra_sheets)
+
+        # Write dedicated analysis file
+        write_analysis_excel(df, rules, extra_sheets, rule_results, ml_results, ANALYSIS_EXCEL)
     else:
         # No rules built yet - just output raw data
         with pd.ExcelWriter(RESULTS_EXCEL, engine="openpyxl") as writer:
@@ -617,7 +716,7 @@ def main():
     # Summary
     # ----------------------------------------------------------
     print("\n" + "=" * 60)
-    output_files = [str(RESULTS_EXCEL)]
+    output_files = [str(RESULTS_EXCEL), str(ANALYSIS_EXCEL)]
     if has_discovered:
         output_files.append(str(DISCOVERED_EXCEL))
         output_files.append(str(MERGED_EXCEL))
